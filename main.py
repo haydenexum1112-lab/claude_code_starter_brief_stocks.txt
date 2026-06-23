@@ -12,15 +12,27 @@ ET = ZoneInfo("America/New_York")
 log = logging.getLogger(__name__)
 
 
+class _ETFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=ET)
+        return dt.strftime("%Y-%m-%d %H:%M:%S ET")
+
+
 def setup_logging() -> None:
     fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+    formatter = _ETFormatter(fmt)
     handlers: list[logging.Handler] = [
         logging.StreamHandler(),
         logging.handlers.RotatingFileHandler(
             "trading_bot.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8"
         ),
     ]
-    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
+    for h in handlers:
+        h.setFormatter(formatter)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for h in handlers:
+        root.addHandler(h)
 
 
 def is_market_open() -> bool:
