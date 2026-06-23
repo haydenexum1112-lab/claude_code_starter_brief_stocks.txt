@@ -7,6 +7,8 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from trading_bot.bot import run_mean_reversion, run_trend_following
+from trading_bot.reporter import send_morning_report, send_evening_report
+from trading_bot.tracker import daily_log
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger(__name__)
@@ -57,6 +59,17 @@ def tf_job() -> None:
     run_trend_following()
 
 
+def morning_report_job() -> None:
+    daily_log.reset()  # fresh slate for the new trading day
+    log.info("Sending morning report")
+    send_morning_report()
+
+
+def evening_report_job() -> None:
+    log.info("Sending evening report")
+    send_evening_report()
+
+
 if __name__ == "__main__":
     setup_logging()
     log.info("Trading bot starting")
@@ -92,10 +105,29 @@ if __name__ == "__main__":
         misfire_grace_time=300,
     )
 
+    # Morning report: 9:00 AM ET — resets daily log, sends market overview
+    scheduler.add_job(
+        morning_report_job,
+        CronTrigger(hour="9", minute="0", day_of_week="mon-fri", timezone=ET),
+        id="morning_report",
+        name="Morning Report (9:00 AM ET)",
+        misfire_grace_time=300,
+    )
+
+    # Evening report: 4:30 PM ET — daily P&L, trades, open positions
+    scheduler.add_job(
+        evening_report_job,
+        CronTrigger(hour="16", minute="30", day_of_week="mon-fri", timezone=ET),
+        id="evening_report",
+        name="Evening Report (4:30 PM ET)",
+        misfire_grace_time=300,
+    )
+
     log.info(
         "Scheduler running — "
         "MR: every 15m (9:00–16:00 ET weekdays) | "
-        "TF: 9:35 AM and 1:35 PM ET weekdays"
+        "TF: 9:35 AM and 1:35 PM ET weekdays | "
+        "Reports: 9:00 AM and 4:30 PM ET"
     )
     try:
         scheduler.start()

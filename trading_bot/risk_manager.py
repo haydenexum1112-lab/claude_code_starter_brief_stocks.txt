@@ -4,7 +4,6 @@ from trading_bot.config import ACCOUNT_RISK_PCT, STOP_LOSS_PCT
 
 logger = logging.getLogger(__name__)
 
-# Correlated pairs subject to the concentration filter
 _CORRELATED_PAIRS: dict[str, str] = {"SPY": "QQQ", "QQQ": "SPY"}
 
 
@@ -17,34 +16,35 @@ class RiskManager:
     2. ATR validity check  — block if ATR is zero or negative
     3. Position sizing     — quantity = floor(equity * 1% / ATR), minimum 1
     4. Attach hard stop    — 1% stop loss on every approved trade
+
+    Returns (payload, reason) — payload is None when blocked.
     """
 
     def __init__(self) -> None:
         self._active: dict[str, str] = {}  # ticker -> last approved direction
 
-    def evaluate(self, signal: dict, account_equity: float) -> dict | None:
+    def evaluate(self, signal: dict, account_equity: float) -> tuple[dict | None, str]:
         ticker = signal["ticker"]
         action = signal["action"]
         atr_val = signal["atr"]
 
         partner = _CORRELATED_PAIRS.get(ticker)
         if partner and self._active.get(partner) == action:
-            logger.info(
-                f"BLOCKED {ticker} {action}: correlation filter — "
-                f"{partner} is already {action}"
-            )
-            return None
+            reason = f"correlation filter — {partner} is already {action}"
+            logger.info(f"BLOCKED {ticker} {action}: {reason}")
+            return None, reason
 
         if atr_val <= 0:
-            logger.warning(f"BLOCKED {ticker}: ATR={atr_val:.4f} is invalid, cannot size position")
-            return None
+            reason = f"invalid ATR ({atr_val:.4f})"
+            logger.warning(f"BLOCKED {ticker}: {reason}")
+            return None, reason
 
         dollar_risk = account_equity * ACCOUNT_RISK_PCT
         quantity = max(1, int(dollar_risk / atr_val))
 
         self._active[ticker] = action
 
-        approved = {
+        payload = {
             "ticker": ticker,
             "action": action,
             "orderType": "market",
@@ -56,7 +56,7 @@ class RiskManager:
             f"ATR=${atr_val:.2f}, equity=${account_equity:,.0f}, "
             f"dollar_risk=${dollar_risk:.2f}"
         )
-        return approved
+        return payload, "approved"
 
     def clear_position(self, ticker: str) -> None:
         """Call when a position is closed to re-enable that ticker's correlation slot."""

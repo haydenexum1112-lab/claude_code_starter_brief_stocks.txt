@@ -36,3 +36,8 @@ ATR_PERIOD: int = 14
 # Risk
 STOP_LOSS_PCT: float = 1.0      # percent passed to TradersPost (1 = 1%)
 ACCOUNT_RISK_PCT: float = 0.01  # fraction of equity risked per trade
+
+# Reporting
+GMAIL_ADDRESS: str = _require("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD: str = _require("GMAIL_APP_PASSWORD")
+MY_EMAIL: str = _require("MY_EMAIL")
