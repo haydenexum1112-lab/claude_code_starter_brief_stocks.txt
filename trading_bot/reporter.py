@@ -1,5 +1,6 @@
 import logging
 import smtplib
+import socket
 from datetime import datetime
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
@@ -39,7 +40,9 @@ def _send_email(subject: str, body: str) -> None:
     msg["To"] = MY_EMAIL
     msg.set_content(body)
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        # Resolve to IPv4 explicitly — some environments don't support IPv6
+        ip = socket.getaddrinfo("smtp.gmail.com", 465, socket.AF_INET)[0][4][0]
+        with smtplib.SMTP_SSL(ip, 465) as smtp:
             smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             smtp.send_message(msg)
         logger.info(f"Email sent: {subject!r} -> {MY_EMAIL}")
