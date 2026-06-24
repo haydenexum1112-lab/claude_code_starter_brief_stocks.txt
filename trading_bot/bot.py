@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 
 from trading_bot import data_fetcher, webhook

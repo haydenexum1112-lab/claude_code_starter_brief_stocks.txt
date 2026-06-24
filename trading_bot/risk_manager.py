@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 
 from trading_bot.config import ACCOUNT_RISK_PCT, STOP_LOSS_PCT

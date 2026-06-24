@@ -1,3 +1,4 @@
+from __future__ import annotations
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
