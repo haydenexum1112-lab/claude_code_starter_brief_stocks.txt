@@ -32,6 +32,9 @@ LOOKBACK_DAYS = 182        # ~6 months
 MIN_ORB_RANGE = 0.0        # filter disabled — it hurt results (curve-fit, not edge)
 GAP_DIRECTION_FILTER = False  # filter disabled — too restrictive, no real edge
 
+STRATEGY = "vwap"          # "vwap" = TJR VWAP reclaim, "orb" = opening range breakout
+VWAP_MIN_BARS_OTHER_SIDE = 1  # price must spend >=1 bar on the other side before a reclaim counts
+
 
 # ---------------------------------------------------------------------------
 # Data
@@ -140,6 +143,101 @@ def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# TJR VWAP Reclaim Signal generation
+# ---------------------------------------------------------------------------
+
+def _vwap_reclaim_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Intraday VWAP resets each day.
+    Bullish reclaim: price was trading BELOW VWAP, then a candle closes back
+      ABOVE VWAP with momentum (green candle). Enter long, trend continuation.
+    Bearish loss:    price was trading ABOVE VWAP, then a candle closes back
+      BELOW VWAP with momentum (red candle). Enter short.
+    Stop = the pullback low/high (last 2 bars). Target = entry +/- 2 * risk.
+    First valid reclaim per day only (one trade/day).
+    """
+    df = df.copy()
+    df.index = df.index.tz_convert(ET)
+
+    results = []
+
+    for date, day in df.groupby(df.index.date):
+        day = day.sort_index()
+        if len(day) < 4:
+            continue
+
+        # Intraday VWAP (resets each day)
+        typical = (day["high"] + day["low"] + day["close"]) / 3.0
+        cum_vol = day["volume"].cumsum()
+        cum_pv = (typical * day["volume"]).cumsum()
+        vwap = cum_pv / cum_vol.replace(0, np.nan)
+
+        bars = list(day.iterrows())
+        below_count = 0
+        above_count = 0
+        triggered = False
+
+        for i in range(1, len(bars)):
+            if triggered:
+                break
+            ts, bar = bars[i]
+            _, prev_bar = bars[i - 1]
+            v = vwap.iloc[i]
+            pv = vwap.iloc[i - 1]
+            if pd.isna(v) or pd.isna(pv):
+                continue
+
+            close = bar["close"]
+            pclose = prev_bar["close"]
+
+            # Track how long price has held one side of VWAP
+            if pclose < pv:
+                below_count += 1
+                above_count = 0
+            elif pclose > pv:
+                above_count += 1
+                below_count = 0
+
+            signal = stop = target = None
+
+            # Bullish reclaim: came from below, closes above VWAP, green candle
+            if (pclose < pv and close > v and close > bar["open"]
+                    and below_count >= VWAP_MIN_BARS_OTHER_SIDE):
+                stop = min(bar["low"], prev_bar["low"])
+                risk = close - stop
+                if risk <= 0:
+                    continue
+                signal = "buy"
+                target = close + REWARD_RATIO * risk
+
+            # Bearish loss: came from above, closes below VWAP, red candle
+            elif (pclose > pv and close < v and close < bar["open"]
+                    and above_count >= VWAP_MIN_BARS_OTHER_SIDE):
+                stop = max(bar["high"], prev_bar["high"])
+                risk = stop - close
+                if risk <= 0:
+                    continue
+                signal = "sell"
+                target = close - REWARD_RATIO * risk
+
+            if signal:
+                triggered = True
+                results.append({
+                    "ts": ts,
+                    "signal": signal,
+                    "stop": stop,
+                    "target": target,
+                })
+
+    if not results:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(results).set_index("ts")
+    out.index = out.index.tz_convert("UTC")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Trade simulation
 # ---------------------------------------------------------------------------
 
@@ -238,8 +336,9 @@ def _simulate(ticker: str, signals: pd.DataFrame, prices: pd.DataFrame,
 # ---------------------------------------------------------------------------
 
 def _summarise(all_trades: list[dict], starting_equity: float, final_equity: float) -> None:
+    strat_name = "TJR VWAP Reclaim" if STRATEGY == "vwap" else "ORB"
     print("\n" + "=" * 60)
-    print(f"BACKTEST RESULTS — ORB Strategy — Past {LOOKBACK_DAYS} Days")
+    print(f"BACKTEST RESULTS — {strat_name} Strategy — Past {LOOKBACK_DAYS} Days")
     print("=" * 60)
 
     if not all_trades:
@@ -313,7 +412,10 @@ def run_backtest() -> None:
 
     print(f"Fetching data from {start.date()} to {end.date()} ({LOOKBACK_DAYS} days)...")
     print(f"Starting equity: ${STARTING_EQUITY:,.0f}")
-    print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R, min range ${MIN_ORB_RANGE:.2f}, gap filter={'on' if GAP_DIRECTION_FILTER else 'off'}")
+    if STRATEGY == "vwap":
+        print(f"Strategy: TJR VWAP Reclaim — 15min bars, {REWARD_RATIO}:1 R:R, end-of-day close")
+    else:
+        print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R, min range ${MIN_ORB_RANGE:.2f}, gap filter={'on' if GAP_DIRECTION_FILTER else 'off'}")
 
     tf_15m = TimeFrame(15, TimeFrameUnit.Minute)
 
@@ -324,7 +426,7 @@ def run_backtest() -> None:
         print(f"  Backtesting {ticker}...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
-            signals = _orb_signals(df)
+            signals = _vwap_reclaim_signals(df) if STRATEGY == "vwap" else _orb_signals(df)
             if signals.empty:
                 print(f"    No signals generated")
                 continue
