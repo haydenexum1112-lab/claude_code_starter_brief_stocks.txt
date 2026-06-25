@@ -26,6 +26,7 @@ _feed = DataFeed.IEX if ALPACA_DATA_FEED.lower() == "iex" else DataFeed.SIP
 STARTING_EQUITY = 25_000.0
 ACCOUNT_RISK_PCT = 0.005   # risk 0.5% of equity per trade
 MAX_RISK_DOLLARS = 500.0   # hard cap: never risk more than $500 per trade
+MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 
 
@@ -180,7 +181,7 @@ def _simulate(ticker: str, signals: pd.DataFrame, prices: pd.DataFrame,
             if risk_per_share <= 0:
                 continue
             dollar_risk = min(equity * ACCOUNT_RISK_PCT, MAX_RISK_DOLLARS)
-            qty = max(1, int(dollar_risk / risk_per_share))
+            qty = max(1, min(int(dollar_risk / risk_per_share), MAX_SHARES))
             position = {
                 "action": row["signal"],
                 "entry": price,
