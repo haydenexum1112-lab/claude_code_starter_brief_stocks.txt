@@ -273,9 +273,10 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
             entry_str = entry_dt.strftime("%Y-%m-%d")
         else:
             entry_str = str(entry_dt)[:10]
+        action = str(t["action"]) if t["action"] else "?"
         result = "WIN " if t["pnl"] > 0 else "LOSS"
         print(
-            f"  {t['ticker']:<5} {t['action'].upper():<5} {entry_str}  "
+            f"  {t['ticker']:<5} {action.upper():<5} {entry_str}  "
             f"entry=${t['entry']:>8.2f}  exit=${t['exit']:>8.2f}  "
             f"qty={t['qty']:>4}  P&L=${t['pnl']:>+8.2f}  [{result}] [{t['exit_reason']}]"
         )
