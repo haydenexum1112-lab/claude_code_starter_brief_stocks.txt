@@ -30,7 +30,7 @@ MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 LOOKBACK_DAYS = 182        # ~6 months
 MIN_ORB_RANGE = 0.50       # skip days where ORB range is too tight (< $0.50)
-GAP_DIRECTION_FILTER = True  # only trade breakouts in direction of overnight gap
+GAP_DIRECTION_FILTER = False  # only trade breakouts in direction of overnight gap
 
 
 # ---------------------------------------------------------------------------
@@ -143,95 +143,92 @@ def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
 # Trade simulation
 # ---------------------------------------------------------------------------
 
+def _close_position(position: dict, exit_price: float, exit_ts, exit_reason: str,
+                    ticker: str, equity: float) -> tuple[dict, float]:
+    entry = position["entry"]
+    qty = position["qty"]
+    if position["action"] == "buy":
+        pnl = (exit_price - entry) * qty
+    else:
+        pnl = (entry - exit_price) * qty
+    equity += pnl
+    trade = {
+        "ticker": ticker,
+        "action": position["action"],
+        "entry": entry,
+        "exit": exit_price,
+        "qty": qty,
+        "pnl": pnl,
+        "exit_reason": exit_reason,
+        "entry_time": position["entry_time"],
+        "exit_time": exit_ts,
+    }
+    return trade, equity
+
+
 def _simulate(ticker: str, signals: pd.DataFrame, prices: pd.DataFrame,
               equity: float) -> tuple[list[dict], float]:
     trades = []
-    position = None
+    prices_et = prices.copy()
+    prices_et.index = prices_et.index.tz_convert(ET)
 
-    for ts, row in signals.iterrows():
-        if ts not in prices.index:
+    for signal_ts, row in signals.iterrows():
+        signal_ts_et = signal_ts.tz_convert(ET)
+        if signal_ts not in prices.index:
             continue
-        price = prices.loc[ts, "close"]
 
-        # Check open position for stop or target hit on entry bar
-        if position:
-            entry = position["entry"]
-            stop = position["stop"]
-            target = position["target"]
-            high = prices.loc[ts, "high"]
-            low = prices.loc[ts, "low"]
+        stop = row["stop"]
+        target = row["target"]
+        entry_price = prices.loc[signal_ts, "close"]
+        risk_per_share = abs(entry_price - stop)
+        if risk_per_share <= 0:
+            continue
+        dollar_risk = min(equity * ACCOUNT_RISK_PCT, MAX_RISK_DOLLARS)
+        qty = max(1, min(int(dollar_risk / risk_per_share), MAX_SHARES))
 
-            hit_target = (position["action"] == "buy" and high >= target) or \
-                         (position["action"] == "sell" and low <= target)
-            hit_stop = (position["action"] == "buy" and low <= stop) or \
-                       (position["action"] == "sell" and high >= stop)
+        position = {
+            "action": row["signal"],
+            "entry": entry_price,
+            "stop": stop,
+            "target": target,
+            "qty": qty,
+            "entry_time": signal_ts,
+        }
 
-            exit_price = None
-            exit_reason = None
+        # Scan bars after entry until end of that trading day
+        trade_date = signal_ts_et.date()
+        day_bars = prices_et[prices_et.index.date == trade_date]
+        after_entry = day_bars[day_bars.index > signal_ts_et]
+
+        closed = False
+        for bar_ts_et, bar in after_entry.iterrows():
+            bar_ts_utc = bar_ts_et.tz_convert("UTC")
+            hit_target = (position["action"] == "buy" and bar["high"] >= target) or \
+                         (position["action"] == "sell" and bar["low"] <= target)
+            hit_stop = (position["action"] == "buy" and bar["low"] <= stop) or \
+                       (position["action"] == "sell" and bar["high"] >= stop)
+
             if hit_target:
-                exit_price = target
-                exit_reason = "target"
+                trade, equity = _close_position(position, target, bar_ts_utc, "target", ticker, equity)
+                trades.append(trade)
+                closed = True
+                break
             elif hit_stop:
-                exit_price = stop
-                exit_reason = "stop_loss"
+                trade, equity = _close_position(position, stop, bar_ts_utc, "stop_loss", ticker, equity)
+                trades.append(trade)
+                closed = True
+                break
 
-            if exit_price is not None:
-                if position["action"] == "buy":
-                    pnl = (exit_price - entry) * position["qty"]
-                else:
-                    pnl = (entry - exit_price) * position["qty"]
-                equity += pnl
-                trades.append({
-                    "ticker": ticker,
-                    "action": position["action"],
-                    "entry": entry,
-                    "exit": exit_price,
-                    "qty": position["qty"],
-                    "pnl": pnl,
-                    "exit_reason": exit_reason,
-                    "entry_time": position["entry_time"],
-                    "exit_time": ts,
-                })
-                position = None
-
-        # Open new position on signal (one trade per day enforced by _orb_signals)
-        if row["signal"] in ("buy", "sell") and not position:
-            stop = row["stop"]
-            target = row["target"]
-            risk_per_share = abs(price - stop)
-            if risk_per_share <= 0:
-                continue
-            dollar_risk = min(equity * ACCOUNT_RISK_PCT, MAX_RISK_DOLLARS)
-            qty = max(1, min(int(dollar_risk / risk_per_share), MAX_SHARES))
-            position = {
-                "action": row["signal"],
-                "entry": price,
-                "stop": stop,
-                "target": target,
-                "qty": qty,
-                "entry_time": ts,
-            }
-
-    # Close open position at end of period
-    if position:
-        last_price = prices["close"].iloc[-1]
-        last_ts = prices.index[-1]
-        if position["action"] == "buy":
-            pnl = (last_price - position["entry"]) * position["qty"]
-        else:
-            pnl = (position["entry"] - last_price) * position["qty"]
-        equity += pnl
-        trades.append({
-            "ticker": ticker,
-            "action": position["action"],
-            "entry": position["entry"],
-            "exit": last_price,
-            "qty": position["qty"],
-            "pnl": pnl,
-            "exit_reason": "end_of_period",
-            "entry_time": position["entry_time"],
-            "exit_time": last_ts,
-        })
+        if not closed:
+            # Close at end of day (last bar's close price)
+            if len(after_entry):
+                last_bar = after_entry.iloc[-1]
+                last_ts_utc = after_entry.index[-1].tz_convert("UTC")
+                trade, equity = _close_position(position, last_bar["close"], last_ts_utc, "end_of_day", ticker, equity)
+            else:
+                # Signal was the last bar of the day — close at entry bar close
+                trade, equity = _close_position(position, entry_price, signal_ts, "end_of_day", ticker, equity)
+            trades.append(trade)
 
     return trades, equity
 
