@@ -326,8 +326,8 @@ def run_backtest() -> None:
         except Exception as e:
             print(f"    ERROR: {e}")
 
-    # VWAP Reversion — QQQ + SPY on 15m bars
-    for ticker in ("QQQ", "SPY"):
+    # VWAP Reversion — QQQ on 15m bars
+    for ticker in ("QQQ",):
         print(f"  Backtesting {ticker} (VWAP Reversion 15m)...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
