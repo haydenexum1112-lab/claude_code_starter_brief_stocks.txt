@@ -35,6 +35,10 @@ GAP_DIRECTION_FILTER = False  # filter disabled — too restrictive, no real edg
 STRATEGY = "vwap"          # "vwap" = TJR VWAP reclaim, "orb" = opening range breakout
 VWAP_MIN_BARS_OTHER_SIDE = 1  # price must spend >=1 bar on the other side before a reclaim counts
 
+# Realistic trading costs (so backtest reflects what you'd actually keep)
+COMMISSION_PER_SHARE = 0.005  # broker/prop-firm commission, each way
+SLIPPAGE_PER_SHARE = 0.010    # realistic fill slippage, each way
+
 
 # ---------------------------------------------------------------------------
 # Data
@@ -249,6 +253,9 @@ def _close_position(position: dict, exit_price: float, exit_ts, exit_reason: str
         pnl = (exit_price - entry) * qty
     else:
         pnl = (entry - exit_price) * qty
+    # Subtract round-trip commission + slippage (entry and exit)
+    cost = (COMMISSION_PER_SHARE + SLIPPAGE_PER_SHARE) * qty * 2
+    pnl -= cost
     equity += pnl
     trade = {
         "ticker": ticker,
