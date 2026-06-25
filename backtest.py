@@ -29,6 +29,9 @@ MAX_RISK_DOLLARS = 500.0   # hard cap: never risk more than $500 per trade
 MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 LOOKBACK_DAYS = 182        # ~6 months
+WINDOW_OFFSET_DAYS = 182   # shift the whole window back N days for out-of-sample testing
+                           #   0   = most recent 6 months (the window we built on)
+                           #   182 = the 6 months BEFORE that (never-seen data)
 MIN_ORB_RANGE = 0.0        # filter disabled — it hurt results (curve-fit, not edge)
 GAP_DIRECTION_FILTER = False  # filter disabled — too restrictive, no real edge
 
@@ -425,6 +428,7 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
 
 def run_backtest() -> None:
     end = datetime.now(ET).replace(hour=16, minute=0, second=0, microsecond=0)
+    end = end - timedelta(days=WINDOW_OFFSET_DAYS)
     start = end - timedelta(days=LOOKBACK_DAYS)
 
     print(f"Fetching data from {start.date()} to {end.date()} ({LOOKBACK_DAYS} days)...")
