@@ -61,6 +61,10 @@ def run_vwap_reclaim() -> None:
             df = data_fetcher.get_15min_bars(ticker)
             signal = vwap_reclaim.evaluate(df, ticker)
             if signal is not None:
+                # Broker-backed one-trade-per-day guard (works across stateless runs)
+                if data_fetcher.has_traded_today(ticker):
+                    logger.info(f"{ticker}: already traded today — skipping (one trade/day)")
+                    continue
                 _process_vwap_signal(signal, equity)
         except Exception as exc:
             logger.error(f"{ticker} VWAP error: {exc}", exc_info=True)

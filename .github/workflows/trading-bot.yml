@@ -1,0 +1,52 @@
+name: VWAP Reclaim Trading Bot
+
+# Runs the stateless single-tick bot (run_once.py) every 15 minutes.
+#
+# GitHub cron is in UTC and has no DST, so we span the widest ET window:
+#   9:00 AM ET  = 13:00 UTC (EDT) / 14:00 UTC (EST)
+#   4:45 PM ET  = 20:45 UTC (EDT) / 21:45 UTC (EST)
+# => run 13:00-21:59 UTC on weekdays. run_once.py re-checks the real ET time and
+#    no-ops outside the morning-report / session / flatten / evening-report windows,
+#    so the extra ticks at the edges cost nothing.
+#
+# NOTE: scheduled workflows only run from the repository's DEFAULT branch.
+on:
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch: {}  # lets you run it manually from the Actions tab to test
+
+# Don't pile up overlapping runs if one is slow.
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run one tick
+        env:
+          # Paper trading is hard-coded here so a misconfigured secret can never
+          # point the bot at a live account during this validation period.
+          ALPACA_BASE_URL: https://paper-api.alpaca.markets
+          ALPACA_DATA_FEED: iex
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TRADERSPOST_STOCKS_WEBHOOK_URL: ${{ secrets.TRADERSPOST_STOCKS_WEBHOOK_URL }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MY_EMAIL: ${{ secrets.MY_EMAIL }}
+        run: python run_once.py

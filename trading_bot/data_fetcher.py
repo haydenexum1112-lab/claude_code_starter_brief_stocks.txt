@@ -1,10 +1,15 @@
 from __future__ import annotations
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus
 
 from trading_bot.config import (
     ALPACA_API_KEY,
@@ -12,6 +17,8 @@ from trading_bot.config import (
     ALPACA_DATA_FEED,
     IS_PAPER,
 )
+
+_ET = ZoneInfo("America/New_York")
 
 _data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 _trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=IS_PAPER)
@@ -54,6 +61,38 @@ def get_daily_bars(ticker: str, limit: int = 210) -> pd.DataFrame:
 def get_account_equity() -> float:
     account = _trading_client.get_account()
     return float(account.equity)
+
+
+def has_traded_today(ticker: str) -> bool:
+    """
+    Broker-backed 'one trade per ticker per day' guard.
+
+    Because GitHub Actions runs the bot as a fresh process every 15 minutes, the
+    in-memory dedup can't persist. The broker is the source of truth: return True
+    if we already hold this ticker, or already placed any order for it today (ET).
+    """
+    # Currently holding it?
+    try:
+        for p in _trading_client.get_all_positions():
+            if p.symbol == ticker:
+                return True
+    except Exception:
+        pass
+
+    # Already placed an order for it today?
+    try:
+        start_et = datetime.now(_ET).replace(hour=0, minute=0, second=0, microsecond=0)
+        req = GetOrdersRequest(
+            status=QueryOrderStatus.ALL,
+            after=start_et,
+            symbols=[ticker],
+            limit=50,
+        )
+        orders = _trading_client.get_orders(filter=req)
+        return len(orders) > 0
+    except Exception:
+        # On any API hiccup, don't block trading — fail open.
+        return False
 
 
 def get_account_info() -> dict:
