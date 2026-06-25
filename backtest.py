@@ -110,33 +110,44 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
         price = prices.loc[ts, "close"]
         atr_val = atr_s.loc[ts]
 
-        # Check stop loss on open position
+        # Check stop loss and profit target on open position
         if position:
             entry = position["entry"]
             if position["action"] == "buy":
                 stop_price = entry * (1 - STOP_LOSS_FRAC)
+                target_price = entry * (1 + STOP_LOSS_FRAC * 2)  # 2:1 reward:risk
                 hit_stop = price <= stop_price
-                pnl_per_share = price - entry
+                hit_target = price >= target_price
             else:
                 stop_price = entry * (1 + STOP_LOSS_FRAC)
+                target_price = entry * (1 - STOP_LOSS_FRAC * 2)  # 2:1 reward:risk
                 hit_stop = price >= stop_price
-                pnl_per_share = entry - price
+                hit_target = price <= target_price
 
-            if hit_stop:
+            exit_price = None
+            exit_reason = None
+            if hit_target:
+                exit_price = target_price
+                exit_reason = "take_profit"
+            elif hit_stop:
+                exit_price = stop_price
+                exit_reason = "stop_loss"
+
+            if exit_price is not None:
                 if position["action"] == "buy":
-                    pnl_per_share = stop_price - entry
+                    pnl_per_share = exit_price - entry
                 else:
-                    pnl_per_share = entry - stop_price
+                    pnl_per_share = entry - exit_price
                 pnl = pnl_per_share * position["qty"]
                 equity += pnl
                 trades.append({
                     "ticker": ticker,
                     "action": position["action"],
                     "entry": entry,
-                    "exit": stop_price,
+                    "exit": exit_price,
                     "qty": position["qty"],
                     "pnl": pnl,
-                    "exit_reason": "stop_loss",
+                    "exit_reason": exit_reason,
                     "entry_time": position["entry_time"],
                     "exit_time": ts,
                 })
