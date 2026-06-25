@@ -22,16 +22,16 @@ ALPACA_DATA_FEED: str = os.getenv("ALPACA_DATA_FEED", "iex")
 
 IS_PAPER: bool = "paper" in ALPACA_BASE_URL.lower()
 
-MEAN_REVERSION_TICKERS: list[str] = ["SPY", "QQQ"]
+MEAN_REVERSION_TICKERS: list[str] = ["QQQ"]
 TREND_FOLLOWING_TICKERS: list[str] = ["GLD", "USO"]
 
 # Indicators
 BB_PERIOD: int = 20
-BB_STD: float = 2.5             # wider bands = only trade extreme moves
+BB_STD: float = 3.0             # tighter entries = more extreme moves only (higher win rate)
 ADX_PERIOD: int = 14
-ADX_THRESHOLD: float = 20.0    # stricter trend filter = fewer false signals
-MA_FAST: int = 50
-MA_SLOW: int = 200
+ADX_THRESHOLD: float = 25.0    # stricter trend filter = fewer false signals
+MA_FAST: int = 20
+MA_SLOW: int = 50
 ATR_PERIOD: int = 14
 
 # Risk

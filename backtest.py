@@ -66,11 +66,14 @@ def _mr_signals(df: pd.DataFrame) -> pd.Series:
     close, high, low = df["close"], df["high"], df["low"]
     upper, _, lower = bollinger_bands(close, BB_PERIOD, BB_STD)
     adx_s = adx(high, low, close, ADX_PERIOD)
+    vol_avg = df["volume"].rolling(20).mean()
+    high_volume = df["volume"] > vol_avg  # volume confirmation
 
     signals = pd.Series(index=df.index, dtype=object)
     signals[close <= lower] = "buy"
     signals[close >= upper] = "sell"
     signals[adx_s > ADX_THRESHOLD] = None  # suppress in strong trends
+    signals[~high_volume] = None           # require above-average volume
     return signals
 
 
@@ -142,12 +145,6 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
 
         # Open new position on signal
         if signal in ("buy", "sell") and not position:
-            # Correlation filter for SPY/QQQ
-            if ticker in ("SPY", "QQQ"):
-                other = "QQQ" if ticker == "SPY" else "SPY"
-                if active_positions.get(other) == signal:
-                    continue
-
             if not atr_val or atr_val <= 0 or np.isnan(atr_val):
                 continue
 
@@ -300,8 +297,8 @@ def run_backtest() -> None:
     equity = STARTING_EQUITY
     active_positions: dict[str, str] = {}
 
-    # Mean Reversion — SPY, QQQ on 15m bars
-    for ticker in ("SPY", "QQQ"):
+    # Mean Reversion — QQQ on 15m bars (SPY dropped: consistently unprofitable in backtest)
+    for ticker in ("QQQ",):
         print(f"  Backtesting {ticker} (Mean Reversion 15m)...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
