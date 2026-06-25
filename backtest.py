@@ -29,8 +29,8 @@ MAX_RISK_DOLLARS = 500.0   # hard cap: never risk more than $500 per trade
 MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 LOOKBACK_DAYS = 182        # ~6 months
-MIN_ORB_RANGE = 0.50       # skip days where ORB range is too tight (< $0.50)
-GAP_DIRECTION_FILTER = False  # only trade breakouts in direction of overnight gap
+MIN_ORB_RANGE = 0.0        # filter disabled — it hurt results (curve-fit, not edge)
+GAP_DIRECTION_FILTER = False  # filter disabled — too restrictive, no real edge
 
 
 # ---------------------------------------------------------------------------
