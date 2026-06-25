@@ -113,28 +113,16 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
         # Check stop loss and profit target on open position
         if position:
             entry = position["entry"]
-            # Slide stop to breakeven once price moves 1% in our favor
             if position["action"] == "buy":
-                if price >= entry * 1.01:
-                    position["stop"] = max(position.get("stop", entry * (1 - STOP_LOSS_FRAC)), entry)
-                stop_price = position.get("stop", entry * (1 - STOP_LOSS_FRAC))
-                target_price = entry * (1 + STOP_LOSS_FRAC * 1.0)  # 1:1 reward:risk
+                stop_price = entry * (1 - STOP_LOSS_FRAC)
                 hit_stop = price <= stop_price
-                hit_target = price >= target_price
             else:
-                if price <= entry * 0.99:
-                    position["stop"] = min(position.get("stop", entry * (1 + STOP_LOSS_FRAC)), entry)
-                stop_price = position.get("stop", entry * (1 + STOP_LOSS_FRAC))
-                target_price = entry * (1 - STOP_LOSS_FRAC * 1.0)  # 1:1 reward:risk
+                stop_price = entry * (1 + STOP_LOSS_FRAC)
                 hit_stop = price >= stop_price
-                hit_target = price <= target_price
 
             exit_price = None
             exit_reason = None
-            if hit_target:
-                exit_price = target_price
-                exit_reason = "take_profit"
-            elif hit_stop:
+            if hit_stop:
                 exit_price = stop_price
                 exit_reason = "stop_loss"
 
