@@ -346,6 +346,8 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
         return
 
     df = pd.DataFrame(all_trades)
+    # Sort chronologically so the equity curve / drawdown is correct across symbols
+    df = df.sort_values("entry_time").reset_index(drop=True)
 
     total_pnl = final_equity - starting_equity
     total_pct = total_pnl / starting_equity * 100
@@ -377,6 +379,14 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
     print(f"Avg win:          ${avg_win:>+,.2f}")
     print(f"Avg loss:         ${avg_loss:>+,.2f}")
     print(f"Profit factor:    {profit_factor:.2f}")
+
+    print(f"\n{'─'*60}")
+    print("BY TICKER")
+    print(f"{'─'*60}")
+    for tk, grp in df.groupby("ticker"):
+        t_wins = grp[grp["pnl"] > 0]
+        wr = len(t_wins) / len(grp) * 100
+        print(f"  {tk:<6}  trades={len(grp):>3}  win%={wr:>5.1f}  P&L=${grp['pnl'].sum():>+9,.2f}")
 
     print(f"\n{'─'*60}")
     print("BY EXIT REASON")
@@ -422,7 +432,7 @@ def run_backtest() -> None:
     all_trades: list[dict] = []
     equity = STARTING_EQUITY
 
-    for ticker in ("QQQ",):
+    for ticker in ("QQQ", "SPY", "IWM", "DIA"):
         print(f"  Backtesting {ticker}...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
