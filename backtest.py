@@ -23,11 +23,12 @@ logging.basicConfig(level=logging.WARNING)
 _client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 _feed = DataFeed.IEX if ALPACA_DATA_FEED.lower() == "iex" else DataFeed.SIP
 
-STARTING_EQUITY = 25_000.0
+STARTING_EQUITY = 100_000.0
 ACCOUNT_RISK_PCT = 0.005   # risk 0.5% of equity per trade
 MAX_RISK_DOLLARS = 500.0   # hard cap: never risk more than $500 per trade
 MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
+LOOKBACK_DAYS = 182        # ~6 months
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ def _simulate(ticker: str, signals: pd.DataFrame, prices: pd.DataFrame,
 
 def _summarise(all_trades: list[dict], starting_equity: float, final_equity: float) -> None:
     print("\n" + "=" * 60)
-    print("BACKTEST RESULTS — ORB Strategy — Past 12 Months")
+    print(f"BACKTEST RESULTS — ORB Strategy — Past {LOOKBACK_DAYS} Days")
     print("=" * 60)
 
     if not all_trades:
@@ -291,9 +292,10 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
 
 def run_backtest() -> None:
     end = datetime.now(ET).replace(hour=16, minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=365)
+    start = end - timedelta(days=LOOKBACK_DAYS)
 
-    print(f"Fetching data from {start.date()} to {end.date()}...")
+    print(f"Fetching data from {start.date()} to {end.date()} ({LOOKBACK_DAYS} days)...")
+    print(f"Starting equity: ${STARTING_EQUITY:,.0f}")
     print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R")
 
     tf_15m = TimeFrame(15, TimeFrameUnit.Minute)
