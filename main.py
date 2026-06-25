@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from trading_bot.bot import run_mean_reversion, run_trend_following
+from trading_bot.bot import run_vwap_reclaim, flatten_all
 from trading_bot.reporter import send_morning_report, send_evening_report
+from trading_bot.strategies import vwap_reclaim
 from trading_bot.tracker import daily_log
 
 ET = ZoneInfo("America/New_York")
@@ -46,22 +47,22 @@ def is_market_open() -> bool:
     return 9 * 60 + 30 <= minutes < 16 * 60
 
 
-def mr_job() -> None:
+def vwap_job() -> None:
     if not is_market_open():
-        log.debug("Market closed — skipping mean reversion check")
+        log.debug("Market closed — skipping VWAP reclaim check")
         return
-    run_mean_reversion()
+    run_vwap_reclaim()
 
 
-def tf_job() -> None:
-    if not is_market_open():
-        log.debug("Market closed — skipping trend following check")
-        return
-    run_trend_following()
+def flatten_job() -> None:
+    # Go flat before the close so we never hold overnight (matches the backtest).
+    log.info("End-of-day flatten")
+    flatten_all()
 
 
 def morning_report_job() -> None:
-    daily_log.reset()  # fresh slate for the new trading day
+    daily_log.reset()       # fresh slate for the new trading day
+    vwap_reclaim.reset()    # allow one fresh signal per ticker today
     log.info("Sending morning report")
     send_morning_report()
 
@@ -77,33 +78,27 @@ if __name__ == "__main__":
 
     scheduler = BlockingScheduler(timezone=ET)
 
-    # Mean Reversion: fire at the close of every 15-minute bar during market hours
+    # VWAP Reclaim: fire at the close of every 15-minute bar during market hours
     scheduler.add_job(
-        mr_job,
+        vwap_job,
         CronTrigger(
             minute="0,15,30,45",
             hour="9-15",
             day_of_week="mon-fri",
             timezone=ET,
         ),
-        id="mean_reversion",
-        name="Mean Reversion SPY/QQQ (15m)",
+        id="vwap_reclaim",
+        name="VWAP Reclaim QQQ/SPY/IWM/DIA (15m)",
         misfire_grace_time=60,
     )
 
-    # Trend Following: fire after approximate 4-hour bar closes
-    # Alpaca 4h bars from 9:30 AM close at ~1:30 PM; check 5 min after each boundary
+    # End-of-day flatten: 3:55 PM ET — exit all positions before the close
     scheduler.add_job(
-        tf_job,
-        CronTrigger(
-            hour="9,13",
-            minute="35",
-            day_of_week="mon-fri",
-            timezone=ET,
-        ),
-        id="trend_following",
-        name="Trend Following GLD/USO (4h)",
-        misfire_grace_time=300,
+        flatten_job,
+        CronTrigger(hour="15", minute="55", day_of_week="mon-fri", timezone=ET),
+        id="eod_flatten",
+        name="End-of-Day Flatten (3:55 PM ET)",
+        misfire_grace_time=120,
     )
 
     # Morning report: 9:00 AM ET — resets daily log, sends market overview
@@ -126,8 +121,8 @@ if __name__ == "__main__":
 
     log.info(
         "Scheduler running — "
-        "MR: every 15m (9:00–16:00 ET weekdays) | "
-        "TF: 9:35 AM and 1:35 PM ET weekdays | "
+        "VWAP Reclaim: every 15m (9:00–16:00 ET weekdays) | "
+        "EOD flatten: 3:55 PM ET | "
         "Reports: 9:00 AM and 4:30 PM ET"
     )
     try:

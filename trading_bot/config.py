@@ -22,6 +22,10 @@ ALPACA_DATA_FEED: str = os.getenv("ALPACA_DATA_FEED", "iex")
 
 IS_PAPER: bool = "paper" in ALPACA_BASE_URL.lower()
 
+# Live strategy: TJR VWAP Reclaim across 4 index ETFs (matches backtest.py)
+VWAP_TICKERS: list[str] = ["QQQ", "SPY", "IWM", "DIA"]
+
+# Legacy strategy tickers (no longer scheduled — kept for backward compatibility)
 MEAN_REVERSION_TICKERS: list[str] = ["QQQ"]
 TREND_FOLLOWING_TICKERS: list[str] = ["GLD", "USO"]
 
@@ -33,6 +37,11 @@ ADX_THRESHOLD: float = 25.0    # stricter trend filter = fewer false signals
 MA_FAST: int = 20
 MA_SLOW: int = 50
 ATR_PERIOD: int = 14
+
+# VWAP Reclaim strategy (mirrors backtest.py constants)
+REWARD_RATIO: float = 2.0       # target = 2x the risk (2:1 R:R)
+MAX_RISK_DOLLARS: float = 500.0 # hard cap: never risk more than $500 per trade
+MAX_SHARES: int = 200           # hard cap on position size
 
 # Risk
 STOP_LOSS_PCT: float = 2.0      # wider stop = less shakeout, bigger winners

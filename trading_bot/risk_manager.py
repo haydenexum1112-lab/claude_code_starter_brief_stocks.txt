@@ -1,7 +1,12 @@
 from __future__ import annotations
 import logging
 
-from trading_bot.config import ACCOUNT_RISK_PCT, STOP_LOSS_PCT
+from trading_bot.config import (
+    ACCOUNT_RISK_PCT,
+    STOP_LOSS_PCT,
+    MAX_RISK_DOLLARS,
+    MAX_SHARES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,43 @@ class RiskManager:
         logger.info(
             f"APPROVED {ticker} {action}: qty={quantity}, stop={STOP_LOSS_PCT}%, "
             f"ATR=${atr_val:.2f}, equity=${account_equity:,.0f}, "
+            f"dollar_risk=${dollar_risk:.2f}"
+        )
+        return payload, "approved"
+
+    def evaluate_vwap(self, signal: dict, account_equity: float) -> tuple[dict | None, str]:
+        """
+        Sizing + bracket builder for the VWAP reclaim strategy.
+
+        Mirrors backtest.py exactly: risk 0.5% of equity (capped at $500), size by
+        the actual risk-per-share (entry - stop), cap at 200 shares, and attach a
+        hard stop and a 2:1 take-profit as absolute prices. No correlation filter —
+        the backtest traded all four symbols independently, so the live bot does too.
+        """
+        ticker = signal["ticker"]
+        action = signal["action"]
+        risk_per_share = signal["risk_per_share"]
+
+        if risk_per_share <= 0:
+            reason = f"invalid risk-per-share ({risk_per_share:.4f})"
+            logger.warning(f"BLOCKED {ticker}: {reason}")
+            return None, reason
+
+        dollar_risk = min(account_equity * ACCOUNT_RISK_PCT, MAX_RISK_DOLLARS)
+        quantity = max(1, min(int(dollar_risk / risk_per_share), MAX_SHARES))
+
+        payload = {
+            "ticker": ticker,
+            "action": action,
+            "orderType": "market",
+            "quantity": quantity,
+            "stopLoss": {"type": "stop", "stopPrice": round(signal["stop_price"], 2)},
+            "takeProfit": {"limitPrice": round(signal["target_price"], 2)},
+        }
+        logger.info(
+            f"APPROVED {ticker} {action}: qty={quantity}, "
+            f"stop=${signal['stop_price']:.2f}, target=${signal['target_price']:.2f}, "
+            f"risk/share=${risk_per_share:.2f}, equity=${account_equity:,.0f}, "
             f"dollar_risk=${dollar_risk:.2f}"
         )
         return payload, "approved"
