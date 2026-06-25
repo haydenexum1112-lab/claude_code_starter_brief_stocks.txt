@@ -141,7 +141,7 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
                 position = None
 
         # Open new position on signal
-        if signal and not position:
+        if signal in ("buy", "sell") and not position:
             # Correlation filter for SPY/QQQ
             if ticker in ("SPY", "QQQ"):
                 other = "QQQ" if ticker == "SPY" else "SPY"
@@ -162,7 +162,7 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
             active_positions[ticker] = signal
 
         # Close on opposite signal
-        elif signal and position and signal != position["action"]:
+        elif signal in ("buy", "sell") and position and signal != position["action"]:
             if position["action"] == "buy":
                 pnl_per_share = price - position["entry"]
             else:
