@@ -115,12 +115,12 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
             entry = position["entry"]
             if position["action"] == "buy":
                 stop_price = entry * (1 - STOP_LOSS_FRAC)
-                target_price = entry * (1 + STOP_LOSS_FRAC * 2)  # 2:1 reward:risk
+                target_price = entry * (1 + STOP_LOSS_FRAC * 1.5)  # 1.5:1 reward:risk
                 hit_stop = price <= stop_price
                 hit_target = price >= target_price
             else:
                 stop_price = entry * (1 + STOP_LOSS_FRAC)
-                target_price = entry * (1 - STOP_LOSS_FRAC * 2)  # 2:1 reward:risk
+                target_price = entry * (1 - STOP_LOSS_FRAC * 1.5)  # 1.5:1 reward:risk
                 hit_stop = price >= stop_price
                 hit_target = price <= target_price
 
