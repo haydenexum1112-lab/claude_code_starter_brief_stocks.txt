@@ -29,6 +29,8 @@ MAX_RISK_DOLLARS = 500.0   # hard cap: never risk more than $500 per trade
 MAX_SHARES = 200           # hard cap on position size
 REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 LOOKBACK_DAYS = 182        # ~6 months
+MIN_ORB_RANGE = 0.50       # skip days where ORB range is too tight (< $0.50)
+GAP_DIRECTION_FILTER = True  # only trade breakouts in direction of overnight gap
 
 
 # ---------------------------------------------------------------------------
@@ -67,18 +69,34 @@ def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
     df.index = df.index.tz_convert(ET)
 
     results = []
+    prev_close: float | None = None
 
     for date, day in df.groupby(df.index.date):
         day = day.sort_index()
         if len(day) < 2:
+            prev_close = day["close"].iloc[-1] if len(day) else prev_close
             continue
 
         orb_bar = day.iloc[0]
         orb_high = orb_bar["high"]
         orb_low = orb_bar["low"]
+        orb_open = orb_bar["open"]
 
         if orb_high <= orb_low:
+            prev_close = day["close"].iloc[-1]
             continue
+
+        # Skip low-range days
+        if (orb_high - orb_low) < MIN_ORB_RANGE:
+            prev_close = day["close"].iloc[-1]
+            continue
+
+        # Determine gap direction (today's open vs yesterday's close)
+        if GAP_DIRECTION_FILTER and prev_close is not None:
+            gap_up = orb_open > prev_close
+            gap_down = orb_open < prev_close
+        else:
+            gap_up = gap_down = True  # no filter if we can't compute
 
         triggered = False
         for ts, bar in day.iloc[1:].iterrows():
@@ -89,12 +107,12 @@ def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
             stop = None
             target = None
 
-            if close > orb_high:
+            if close > orb_high and (not GAP_DIRECTION_FILTER or gap_up):
                 signal = "buy"
                 stop = orb_low
                 risk = close - stop
                 target = close + REWARD_RATIO * risk
-            elif close < orb_low:
+            elif close < orb_low and (not GAP_DIRECTION_FILTER or gap_down):
                 signal = "sell"
                 stop = orb_high
                 risk = stop - close
@@ -110,6 +128,8 @@ def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
                     "stop": stop,
                     "target": target,
                 })
+
+        prev_close = day["close"].iloc[-1]
 
     if not results:
         return pd.DataFrame()
@@ -296,7 +316,7 @@ def run_backtest() -> None:
 
     print(f"Fetching data from {start.date()} to {end.date()} ({LOOKBACK_DAYS} days)...")
     print(f"Starting equity: ${STARTING_EQUITY:,.0f}")
-    print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R")
+    print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R, min range ${MIN_ORB_RANGE:.2f}, gap filter={'on' if GAP_DIRECTION_FILTER else 'off'}")
 
     tf_15m = TimeFrame(15, TimeFrameUnit.Minute)
 
