@@ -8,20 +8,10 @@ import numpy as np
 import pandas as pd
 
 from trading_bot.config import (
-    ADX_PERIOD,
-    ADX_THRESHOLD,
     ALPACA_API_KEY,
     ALPACA_SECRET_KEY,
     ALPACA_DATA_FEED,
-    ATR_PERIOD,
-    BB_PERIOD,
-    BB_STD,
-    MA_FAST,
-    MA_SLOW,
-    STOP_LOSS_PCT,
-    ACCOUNT_RISK_PCT,
 )
-from trading_bot.indicators import adx, atr, bollinger_bands, sma, true_range, vwap, vwap_std
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -34,7 +24,8 @@ _client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 _feed = DataFeed.IEX if ALPACA_DATA_FEED.lower() == "iex" else DataFeed.SIP
 
 STARTING_EQUITY = 25_000.0
-STOP_LOSS_FRAC = STOP_LOSS_PCT / 100  # matches config
+ACCOUNT_RISK_PCT = 0.005   # risk 0.5% of equity per trade
+REWARD_RATIO = 2.0         # target = 2x the risk (2:1 R:R)
 
 
 # ---------------------------------------------------------------------------
@@ -59,93 +50,113 @@ def _fetch(ticker: str, timeframe: TimeFrame, start: datetime, end: datetime) ->
 
 
 # ---------------------------------------------------------------------------
-# Signal generation (vectorised — returns a Series of "buy"/"sell"/None)
+# ORB Signal generation
 # ---------------------------------------------------------------------------
 
-def _mr_signals(df: pd.DataFrame) -> pd.Series:
-    close, high, low = df["close"], df["high"], df["low"]
-    upper, _, lower = bollinger_bands(close, BB_PERIOD, BB_STD)
-    adx_s = adx(high, low, close, ADX_PERIOD)
-    vol_avg = df["volume"].rolling(20).mean()
-    high_volume = df["volume"] > vol_avg
-
-    signals = pd.Series(index=df.index, dtype=object)
-    signals[close <= lower] = "buy"
-    signals[close >= upper] = "sell"
-    signals[adx_s > ADX_THRESHOLD] = None   # suppress in strong trends
-    signals[~high_volume] = None            # require above-average volume
-    return signals
-
-
-def _vwap_signals(df: pd.DataFrame, std_entry: float = 1.5) -> pd.Series:
+def _orb_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Fade price when it stretches std_entry standard deviations from VWAP.
-    Exit signal fires when price crosses back through VWAP.
-    ADX filter suppresses signals in strong trends.
+    First bar of each day (9:30 ET) defines the opening range.
+    Breakout above range high = buy signal; below range low = sell signal.
+    Stop = opposite side of range. Target = entry +/- REWARD_RATIO * risk.
+    Only the first breakout per day is taken.
     """
-    close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
-    vwap_s = vwap(high, low, close, volume)
-    vstd = vwap_std(high, low, close, volume)
-    adx_s = adx(high, low, close, ADX_PERIOD)
-    vol_avg = volume.rolling(20).mean()
-    high_volume = volume > vol_avg
+    df = df.copy()
+    df.index = df.index.tz_convert(ET)
 
-    upper_band = vwap_s + std_entry * vstd
-    lower_band = vwap_s - std_entry * vstd
+    results = []
 
-    signals = pd.Series(index=df.index, dtype=object)
-    # Price stretched above VWAP → sell (expect reversion down)
-    signals[close >= upper_band] = "sell"
-    # Price stretched below VWAP → buy (expect reversion up)
-    signals[close <= lower_band] = "buy"
-    # Suppress in strong trends
-    signals[adx_s > ADX_THRESHOLD] = None
-    # Require above-average volume
-    signals[~high_volume] = None
-    return signals
+    for date, day in df.groupby(df.index.date):
+        day = day.sort_index()
+        if len(day) < 2:
+            continue
+
+        orb_bar = day.iloc[0]
+        orb_high = orb_bar["high"]
+        orb_low = orb_bar["low"]
+
+        if orb_high <= orb_low:
+            continue
+
+        triggered = False
+        for ts, bar in day.iloc[1:].iterrows():
+            if triggered:
+                break
+            close = bar["close"]
+            signal = None
+            stop = None
+            target = None
+
+            if close > orb_high:
+                signal = "buy"
+                stop = orb_low
+                risk = close - stop
+                target = close + REWARD_RATIO * risk
+            elif close < orb_low:
+                signal = "sell"
+                stop = orb_high
+                risk = stop - close
+                target = close - REWARD_RATIO * risk
+
+            if signal:
+                triggered = True
+                results.append({
+                    "ts": ts,
+                    "signal": signal,
+                    "orb_high": orb_high,
+                    "orb_low": orb_low,
+                    "stop": stop,
+                    "target": target,
+                })
+
+    if not results:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(results).set_index("ts")
+    out.index = out.index.tz_convert("UTC")
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Trade simulation
 # ---------------------------------------------------------------------------
 
-def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
-               equity: float, active_positions: dict) -> tuple[list[dict], float]:
-    """
-    Walk forward through signals, open/close positions with 1% stop loss.
-    Returns list of closed trade dicts and updated equity.
-    """
+def _simulate(ticker: str, signals: pd.DataFrame, prices: pd.DataFrame,
+              equity: float) -> tuple[list[dict], float]:
     trades = []
-    position = None  # {"action": "buy"/"sell", "entry": float, "qty": int, "entry_time": dt}
+    position = None
 
-    atr_s = atr(prices["high"], prices["low"], prices["close"], ATR_PERIOD)
-
-    for ts, signal in signals.items():
+    for ts, row in signals.iterrows():
+        if ts not in prices.index:
+            continue
         price = prices.loc[ts, "close"]
-        atr_val = atr_s.loc[ts]
 
-        # Check stop loss and profit target on open position
+        # Check open position for stop or target hit on entry bar
         if position:
             entry = position["entry"]
-            if position["action"] == "buy":
-                stop_price = entry * (1 - STOP_LOSS_FRAC)
-                hit_stop = price <= stop_price
-            else:
-                stop_price = entry * (1 + STOP_LOSS_FRAC)
-                hit_stop = price >= stop_price
+            stop = position["stop"]
+            target = position["target"]
+            high = prices.loc[ts, "high"]
+            low = prices.loc[ts, "low"]
+
+            hit_target = (position["action"] == "buy" and high >= target) or \
+                         (position["action"] == "sell" and low <= target)
+            hit_stop = (position["action"] == "buy" and low <= stop) or \
+                       (position["action"] == "sell" and high >= stop)
 
             exit_price = None
             exit_reason = None
-            if hit_stop:
-                exit_price = stop_price
+            if hit_target:
+                exit_price = target
+                exit_reason = "target"
+            elif hit_stop:
+                exit_price = stop
                 exit_reason = "stop_loss"
 
             if exit_price is not None:
                 if position["action"] == "buy":
-                    pnl_per_share = exit_price - entry
+                    pnl = (exit_price - entry) * position["qty"]
                 else:
-                    pnl_per_share = entry - exit_price
-                pnl = pnl_per_share * position["qty"]
+                    pnl = (entry - exit_price) * position["qty"]
                 equity += pnl
                 trades.append({
                     "ticker": ticker,
@@ -158,55 +169,34 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
                     "entry_time": position["entry_time"],
                     "exit_time": ts,
                 })
-                active_positions.pop(ticker, None)
                 position = None
 
-        # Open new position on signal
-        if signal in ("buy", "sell") and not position:
-            if not atr_val or atr_val <= 0 or np.isnan(atr_val):
+        # Open new position on signal (one trade per day enforced by _orb_signals)
+        if row["signal"] in ("buy", "sell") and not position:
+            stop = row["stop"]
+            target = row["target"]
+            risk_per_share = abs(price - stop)
+            if risk_per_share <= 0:
                 continue
-
             dollar_risk = equity * ACCOUNT_RISK_PCT
-            qty = max(1, int(dollar_risk / atr_val))
+            qty = max(1, int(dollar_risk / risk_per_share))
             position = {
-                "action": signal,
+                "action": row["signal"],
                 "entry": price,
+                "stop": stop,
+                "target": target,
                 "qty": qty,
                 "entry_time": ts,
             }
-            active_positions[ticker] = signal
 
-        # Close on opposite signal
-        elif signal in ("buy", "sell") and position and signal != position["action"]:
-            if position["action"] == "buy":
-                pnl_per_share = price - position["entry"]
-            else:
-                pnl_per_share = position["entry"] - price
-            pnl = pnl_per_share * position["qty"]
-            equity += pnl
-            trades.append({
-                "ticker": ticker,
-                "action": position["action"],
-                "entry": position["entry"],
-                "exit": price,
-                "qty": position["qty"],
-                "pnl": pnl,
-                "exit_reason": "signal_flip",
-                "entry_time": position["entry_time"],
-                "exit_time": ts,
-            })
-            active_positions.pop(ticker, None)
-            position = None
-
-    # Close any open position at end of period
+    # Close open position at end of period
     if position:
         last_price = prices["close"].iloc[-1]
         last_ts = prices.index[-1]
         if position["action"] == "buy":
-            pnl_per_share = last_price - position["entry"]
+            pnl = (last_price - position["entry"]) * position["qty"]
         else:
-            pnl_per_share = position["entry"] - last_price
-        pnl = pnl_per_share * position["qty"]
+            pnl = (position["entry"] - last_price) * position["qty"]
         equity += pnl
         trades.append({
             "ticker": ticker,
@@ -219,7 +209,6 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
             "entry_time": position["entry_time"],
             "exit_time": last_ts,
         })
-        active_positions.pop(ticker, None)
 
     return trades, equity
 
@@ -230,7 +219,7 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
 
 def _summarise(all_trades: list[dict], starting_equity: float, final_equity: float) -> None:
     print("\n" + "=" * 60)
-    print("BACKTEST RESULTS — Past 12 Months")
+    print("BACKTEST RESULTS — ORB Strategy — Past 12 Months")
     print("=" * 60)
 
     if not all_trades:
@@ -249,7 +238,6 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
     avg_loss = losses["pnl"].mean() if len(losses) else 0
     profit_factor = abs(wins["pnl"].sum() / losses["pnl"].sum()) if losses["pnl"].sum() != 0 else float("inf")
 
-    # Max drawdown
     equity_curve = [starting_equity]
     running = starting_equity
     for _, row in df.iterrows():
@@ -272,26 +260,23 @@ def _summarise(all_trades: list[dict], starting_equity: float, final_equity: flo
     print(f"Profit factor:    {profit_factor:.2f}")
 
     print(f"\n{'─'*60}")
-    print("BY TICKER")
+    print("BY EXIT REASON")
     print(f"{'─'*60}")
-    for ticker, grp in df.groupby("ticker"):
-        t_wins = grp[grp["pnl"] > 0]
-        wr = len(t_wins) / len(grp) * 100
-        print(f"  {ticker:<5}  trades={len(grp):>3}  win%={wr:>5.1f}  P&L=${grp['pnl'].sum():>+9,.2f}")
+    for reason, grp in df.groupby("exit_reason"):
+        r_wins = grp[grp["pnl"] > 0]
+        wr = len(r_wins) / len(grp) * 100
+        print(f"  {reason:<18}  trades={len(grp):>3}  win%={wr:>5.1f}  P&L=${grp['pnl'].sum():>+9,.2f}")
 
     print(f"\n{'─'*60}")
     print("TRADE LOG")
     print(f"{'─'*60}")
     for _, t in df.iterrows():
         entry_dt = t["entry_time"]
-        if hasattr(entry_dt, "strftime"):
-            entry_str = entry_dt.strftime("%Y-%m-%d")
-        else:
-            entry_str = str(entry_dt)[:10]
-        action = str(t["action"]) if t["action"] else "?"
+        entry_str = entry_dt.strftime("%Y-%m-%d") if hasattr(entry_dt, "strftime") else str(entry_dt)[:10]
+        action = str(t["action"]).upper()
         result = "WIN " if t["pnl"] > 0 else "LOSS"
         print(
-            f"  {t['ticker']:<5} {action.upper():<5} {entry_str}  "
+            f"  {t['ticker']:<5} {action:<5} {entry_str}  "
             f"entry=${t['entry']:>8.2f}  exit=${t['exit']:>8.2f}  "
             f"qty={t['qty']:>4}  P&L=${t['pnl']:>+8.2f}  [{result}] [{t['exit_reason']}]"
         )
@@ -307,32 +292,22 @@ def run_backtest() -> None:
     start = end - timedelta(days=365)
 
     print(f"Fetching data from {start.date()} to {end.date()}...")
+    print(f"Strategy: Opening Range Breakout — 15min range, {REWARD_RATIO}:1 R:R")
 
     tf_15m = TimeFrame(15, TimeFrameUnit.Minute)
 
     all_trades: list[dict] = []
     equity = STARTING_EQUITY
-    active_positions: dict[str, str] = {}
 
-    # BB Mean Reversion — QQQ on 15m bars
     for ticker in ("QQQ",):
-        print(f"  Backtesting {ticker} (BB Mean Reversion 15m)...")
+        print(f"  Backtesting {ticker}...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
-            signals = _mr_signals(df)
-            trades, equity = _simulate(ticker, signals, df, equity, active_positions)
-            all_trades.extend(trades)
-            print(f"    {len(trades)} trades generated")
-        except Exception as e:
-            print(f"    ERROR: {e}")
-
-    # VWAP Reversion — QQQ on 15m bars
-    for ticker in ("QQQ",):
-        print(f"  Backtesting {ticker} (VWAP Reversion 15m)...")
-        try:
-            df = _fetch(ticker, tf_15m, start, end)
-            signals = _vwap_signals(df)
-            trades, equity = _simulate(ticker, signals, df, equity, active_positions)
+            signals = _orb_signals(df)
+            if signals.empty:
+                print(f"    No signals generated")
+                continue
+            trades, equity = _simulate(ticker, signals, df, equity)
             all_trades.extend(trades)
             print(f"    {len(trades)} trades generated")
         except Exception as e:
