@@ -21,7 +21,7 @@ from trading_bot.config import (
     STOP_LOSS_PCT,
     ACCOUNT_RISK_PCT,
 )
-from trading_bot.indicators import adx, atr, bollinger_bands, sma, true_range
+from trading_bot.indicators import adx, atr, bollinger_bands, sma, true_range, vwap, vwap_std
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -77,17 +77,31 @@ def _mr_signals(df: pd.DataFrame) -> pd.Series:
     return signals
 
 
-def _tf_signals(df: pd.DataFrame) -> pd.Series:
-    close = df["close"]
-    fast = sma(close, MA_FAST)
-    slow = sma(close, MA_SLOW)
+def _vwap_signals(df: pd.DataFrame, std_entry: float = 1.5) -> pd.Series:
+    """
+    Fade price when it stretches std_entry standard deviations from VWAP.
+    Exit signal fires when price crosses back through VWAP.
+    ADX filter suppresses signals in strong trends.
+    """
+    close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
+    vwap_s = vwap(high, low, close, volume)
+    vstd = vwap_std(high, low, close, volume)
+    adx_s = adx(high, low, close, ADX_PERIOD)
+    vol_avg = volume.rolling(20).mean()
+    high_volume = volume > vol_avg
 
-    bull = (fast.shift(1) < slow.shift(1)) & (fast >= slow)
-    bear = (fast.shift(1) > slow.shift(1)) & (fast <= slow)
+    upper_band = vwap_s + std_entry * vstd
+    lower_band = vwap_s - std_entry * vstd
 
     signals = pd.Series(index=df.index, dtype=object)
-    signals[bull] = "buy"
-    signals[bear] = "sell"
+    # Price stretched above VWAP → sell (expect reversion down)
+    signals[close >= upper_band] = "sell"
+    # Price stretched below VWAP → buy (expect reversion up)
+    signals[close <= lower_band] = "buy"
+    # Suppress in strong trends
+    signals[adx_s > ADX_THRESHOLD] = None
+    # Require above-average volume
+    signals[~high_volume] = None
     return signals
 
 
@@ -295,15 +309,14 @@ def run_backtest() -> None:
     print(f"Fetching data from {start.date()} to {end.date()}...")
 
     tf_15m = TimeFrame(15, TimeFrameUnit.Minute)
-    tf_4h = TimeFrame(4, TimeFrameUnit.Hour)
 
     all_trades: list[dict] = []
     equity = STARTING_EQUITY
     active_positions: dict[str, str] = {}
 
-    # Mean Reversion — QQQ on 15m bars (SPY dropped: consistently unprofitable in backtest)
+    # BB Mean Reversion — QQQ on 15m bars
     for ticker in ("QQQ",):
-        print(f"  Backtesting {ticker} (Mean Reversion 15m)...")
+        print(f"  Backtesting {ticker} (BB Mean Reversion 15m)...")
         try:
             df = _fetch(ticker, tf_15m, start, end)
             signals = _mr_signals(df)
@@ -313,12 +326,12 @@ def run_backtest() -> None:
         except Exception as e:
             print(f"    ERROR: {e}")
 
-    # Trend Following — GLD, USO on 4h bars
-    for ticker in ("GLD", "USO"):
-        print(f"  Backtesting {ticker} (Trend Following 4h)...")
+    # VWAP Reversion — QQQ + SPY on 15m bars
+    for ticker in ("QQQ", "SPY"):
+        print(f"  Backtesting {ticker} (VWAP Reversion 15m)...")
         try:
-            df = _fetch(ticker, tf_4h, start, end)
-            signals = _tf_signals(df)
+            df = _fetch(ticker, tf_15m, start, end)
+            signals = _vwap_signals(df)
             trades, equity = _simulate(ticker, signals, df, equity, active_positions)
             all_trades.extend(trades)
             print(f"    {len(trades)} trades generated")

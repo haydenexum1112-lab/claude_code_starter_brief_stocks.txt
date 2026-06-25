@@ -45,6 +45,26 @@ def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
     return dx.ewm(alpha=alpha, adjust=False).mean()
 
 
+def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Intraday VWAP, reset each trading day."""
+    typical = (high + low + close) / 3
+    tp_vol = typical * volume
+    dates = close.index.normalize()
+    cumtp = tp_vol.groupby(dates).cumsum()
+    cumvol = volume.groupby(dates).cumsum()
+    return cumtp / cumvol.replace(0, np.nan)
+
+
+def vwap_std(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Intraday VWAP standard deviation band width, reset each day."""
+    typical = (high + low + close) / 3
+    vwap_s = vwap(high, low, close, volume)
+    dates = close.index.normalize()
+    variance = ((typical - vwap_s) ** 2 * volume).groupby(dates).cumsum() / \
+               volume.groupby(dates).cumsum().replace(0, np.nan)
+    return variance.apply(np.sqrt)
+
+
 def sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(period).mean()
 
