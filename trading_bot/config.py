@@ -27,16 +27,16 @@ TREND_FOLLOWING_TICKERS: list[str] = ["GLD", "USO"]
 
 # Indicators
 BB_PERIOD: int = 20
-BB_STD: float = 2.0
+BB_STD: float = 2.5             # wider bands = only trade extreme moves
 ADX_PERIOD: int = 14
-ADX_THRESHOLD: float = 25.0
+ADX_THRESHOLD: float = 20.0    # stricter trend filter = fewer false signals
 MA_FAST: int = 50
 MA_SLOW: int = 200
 ATR_PERIOD: int = 14
 
 # Risk
-STOP_LOSS_PCT: float = 1.0      # percent passed to TradersPost (1 = 1%)
-ACCOUNT_RISK_PCT: float = 0.01  # fraction of equity risked per trade
+STOP_LOSS_PCT: float = 2.0      # wider stop = less shakeout, bigger winners
+ACCOUNT_RISK_PCT: float = 0.005 # risk 0.5% per trade = smaller positions, lower drawdown
 
 # Reporting
 GMAIL_ADDRESS: str = _require("GMAIL_ADDRESS")

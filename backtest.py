@@ -34,7 +34,7 @@ _client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 _feed = DataFeed.IEX if ALPACA_DATA_FEED.lower() == "iex" else DataFeed.SIP
 
 STARTING_EQUITY = 25_000.0
-STOP_LOSS_FRAC = STOP_LOSS_PCT / 100  # 0.01
+STOP_LOSS_FRAC = STOP_LOSS_PCT / 100  # matches config
 
 
 # ---------------------------------------------------------------------------
