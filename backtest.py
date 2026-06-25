@@ -148,7 +148,7 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
                 if active_positions.get(other) == signal:
                     continue
 
-            if atr_val <= 0:
+            if not atr_val or atr_val <= 0 or np.isnan(atr_val):
                 continue
 
             dollar_risk = equity * ACCOUNT_RISK_PCT
