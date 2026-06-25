@@ -21,7 +21,7 @@ from trading_bot.config import (
     STOP_LOSS_PCT,
     ACCOUNT_RISK_PCT,
 )
-from trading_bot.indicators import adx, atr, bollinger_bands, sma, true_range
+from trading_bot.indicators import adx, atr, bollinger_bands, rsi, sma, true_range
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -66,14 +66,25 @@ def _mr_signals(df: pd.DataFrame) -> pd.Series:
     close, high, low = df["close"], df["high"], df["low"]
     upper, _, lower = bollinger_bands(close, BB_PERIOD, BB_STD)
     adx_s = adx(high, low, close, ADX_PERIOD)
+    rsi_s = rsi(close, 14)
     vol_avg = df["volume"].rolling(20).mean()
-    high_volume = df["volume"] > vol_avg  # volume confirmation
+    high_volume = df["volume"] > vol_avg
+
+    # Time-of-day filter: only trade 10:30am–3:00pm ET (avoid open/close chaos)
+    times = df.index.tz_convert(ET)
+    in_window = (
+        (times.hour > 10) | ((times.hour == 10) & (times.minute >= 30))
+    ) & (times.hour < 15)
 
     signals = pd.Series(index=df.index, dtype=object)
     signals[close <= lower] = "buy"
     signals[close >= upper] = "sell"
-    signals[adx_s > ADX_THRESHOLD] = None  # suppress in strong trends
-    signals[~high_volume] = None           # require above-average volume
+    signals[adx_s > ADX_THRESHOLD] = None   # suppress in strong trends
+    signals[~high_volume] = None            # require above-average volume
+    signals[~in_window] = None              # time-of-day filter
+    # RSI confirmation: oversold for buys, overbought for sells
+    signals[(signals == "buy") & (rsi_s >= 35)] = None
+    signals[(signals == "sell") & (rsi_s <= 65)] = None
     return signals
 
 
@@ -113,13 +124,18 @@ def _simulate(ticker: str, signals: pd.Series, prices: pd.DataFrame,
         # Check stop loss and profit target on open position
         if position:
             entry = position["entry"]
+            # Slide stop to breakeven once price moves 1% in our favor
             if position["action"] == "buy":
-                stop_price = entry * (1 - STOP_LOSS_FRAC)
+                if price >= entry * 1.01:
+                    position["stop"] = max(position.get("stop", entry * (1 - STOP_LOSS_FRAC)), entry)
+                stop_price = position.get("stop", entry * (1 - STOP_LOSS_FRAC))
                 target_price = entry * (1 + STOP_LOSS_FRAC * 1.5)  # 1.5:1 reward:risk
                 hit_stop = price <= stop_price
                 hit_target = price >= target_price
             else:
-                stop_price = entry * (1 + STOP_LOSS_FRAC)
+                if price <= entry * 0.99:
+                    position["stop"] = min(position.get("stop", entry * (1 + STOP_LOSS_FRAC)), entry)
+                stop_price = position.get("stop", entry * (1 + STOP_LOSS_FRAC))
                 target_price = entry * (1 - STOP_LOSS_FRAC * 1.5)  # 1.5:1 reward:risk
                 hit_stop = price >= stop_price
                 hit_target = price <= target_price
