@@ -84,6 +84,35 @@ class VetoTests(unittest.TestCase):
         self.assertEqual(d.status, "SKIP")
 
 
+class BacktestTests(unittest.TestCase):
+    def test_runs_and_books_trades(self) -> None:
+        from f3.backtest import F3Backtester
+        from f3.market_data import synthetic_history
+
+        result = F3Backtester(start_balance=50_000).run("NQ", synthetic_history(days=12))
+        self.assertGreater(result.n, 0, "backtester should fire on the synthetic history")
+        # every trade is fully accounted: wins + losses + end-of-day == total
+        booked = len(result.wins) + len(result.losses)
+        self.assertEqual(booked, result.n)
+        # balance moves and the equity curve tracks every trade
+        self.assertEqual(len(result.equity_curve), result.n + 1)
+        self.assertAlmostEqual(
+            result.end_balance,
+            result.start_balance + sum(t.pnl for t in result.trades),
+            places=2,
+        )
+
+    def test_risk_per_trade_is_half_percent(self) -> None:
+        from f3.backtest import F3Backtester
+        from f3.market_data import synthetic_history
+
+        result = F3Backtester(start_balance=50_000).run("NQ", synthetic_history(days=6))
+        # the first loss risks ~0.5% of the balance at entry
+        losses = [t for t in result.trades if t.outcome == "loss"]
+        if losses:
+            self.assertLess(abs(losses[0].pnl), 50_000 * 0.5 / 100 * 1.2)
+
+
 class IctPrimitiveTests(unittest.TestCase):
     def test_killzones(self) -> None:
         cfg = F3Config()

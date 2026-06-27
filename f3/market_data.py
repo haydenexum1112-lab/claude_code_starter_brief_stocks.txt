@@ -94,16 +94,23 @@ def textbook_long_setup(end: datetime | None = None, minutes: int = 5) -> list[C
     if end is None:
         now = datetime.now(ET)
         end = now.replace(hour=9, minute=45, second=0, microsecond=0)
+    candles = _long_setup_candles()
+    times = _times(len(candles), end, minutes)
+    return [Candle(t, c.open, c.high, c.low, c.close, c.volume)
+            for t, c in zip(times, candles)]
 
+
+def _long_setup_candles(base: float = 20_000.0) -> list[Candle]:
+    """The untimed candles of one clean bullish F3 setup (FRAME→FIND→FIRE)."""
     # Anchor walk (close prices). Each leg is several candles so swing fractals
     # form cleanly. Turning points become swing highs/lows.
     legs: list[tuple[float, int]] = [
-        (20_000, 1),   # start
-        (19_900, 4),   # swing low  L1
-        (20_050, 4),   # swing high H1
-        (19_950, 4),   # swing low  L2 (higher low)
-        (20_120, 5),   # bullish BOS above H1 → bias LONG, new high H2
-        (20_010, 4),   # pullback begins, into discount
+        (base + 0,    1),   # start
+        (base - 100,  4),   # swing low  L1
+        (base + 50,   4),   # swing high H1
+        (base - 50,   4),   # swing low  L2 (higher low)
+        (base + 120,  5),   # bullish BOS above H1 → bias LONG, new high H2
+        (base + 10,   4),   # pullback begins, into discount
     ]
     closes: list[float] = []
     prev = legs[0][0]
@@ -113,33 +120,72 @@ def textbook_long_setup(end: datetime | None = None, minutes: int = 5) -> list[C
         prev = target
 
     candles: list[Candle] = []
-    # Build the trend/pullback candles first (timestamps assigned at the end).
     o = legs[0][0]
     for c in closes:
-        up = abs(c - o) * 0.3 + 3
-        dn = abs(c - o) * 0.3 + 3
-        candles.append(_candle(datetime.now(ET), o, c, up, dn))
+        pad = abs(c - o) * 0.3 + 3
+        candles.append(_candle(datetime.now(ET), o, c, pad, pad))
         o = c
 
     # --- The sweep + FVG sequence (FIND) -------------------------------------
-    # 1) down candle, 2) sweep candle (wicks below L2=19,950 then closes back
-    #    above it), 3) up displacement candle leaving a gap above candle 1's high.
-    c1 = _candle(datetime.now(ET), o, 19_980, 4, 6)           # candle[i-1]
-    c2 = _candle(datetime.now(ET), 19_980, 19_975, 3, 40)     # sweep: low 19,935
-    # force the sweep wick below the swept swing low and close back above it
-    c2 = Candle(c2.time, c2.open, 19_984, 19_935, 19_975, c2.volume)
-    c3 = _candle(datetime.now(ET), 19_975, 20_030, 8, 3)      # displacement up
-    # bullish FVG: c1.high < c3.low  → widen c3's low above c1's high
-    c3 = Candle(c3.time, c3.open, max(c3.high, 20_035), c1.high + 2, 20_030, c3.volume)
+    swept_low = base - 50           # L2
+    c1 = _candle(datetime.now(ET), o, base - 20, 4, 6)              # candle[i-1]
+    c2 = _candle(datetime.now(ET), base - 20, base - 25, 3, 40)     # sweep candle
+    c2 = Candle(c2.time, c2.open, base - 16, swept_low - 15, base - 25, c2.volume)
+    c3 = _candle(datetime.now(ET), base - 25, base + 30, 8, 3)      # displacement up
+    c3 = Candle(c3.time, c3.open, max(c3.high, base + 35), c1.high + 2, base + 30, c3.volume)
     candles.extend([c1, c2, c3])
 
     # --- LTF shift back up (FIRE confirmation) -------------------------------
     o = c3.close
-    for target in (20_015, 20_045, 20_075):  # minor pullback then break up
-        candles.append(_candle(datetime.now(ET), o, target, 6, 6))
-        o = target
+    for tgt in (base + 15, base + 45, base + 75):
+        candles.append(_candle(datetime.now(ET), o, tgt, 6, 6))
+        o = tgt
+    return candles
 
-    # Assign evenly spaced timestamps ending at `end`.
-    times = _times(len(candles), end, minutes)
-    return [Candle(t, c.open, c.high, c.low, c.close, c.volume)
-            for t, c in zip(times, candles)]
+
+def _resolution_candles(o: float, *, win: bool, risk: float = 110.0,
+                        count: int = 8) -> list[Candle]:
+    """Candles after the signal that walk price to the target (win) or stop (loss)."""
+    # entry ≈ o (last close), target ≈ entry + 2*risk, stop ≈ entry - risk
+    dest = o + 2.4 * risk if win else o - 1.4 * risk
+    out: list[Candle] = []
+    prev = o
+    for k in range(1, count + 1):
+        c = o + (dest - o) * k / count
+        pad = abs(c - prev) * 0.2 + 2
+        out.append(_candle(datetime.now(ET), prev, c, pad, pad))
+        prev = c
+    return out
+
+
+def synthetic_history(days: int = 12, *, minutes: int = 5, seed: int = 11,
+                      win_rate: float = 0.6) -> list[Candle]:
+    """
+    A multi-day series for the backtester: one clean F3 long setup per weekday
+    inside the NY AM killzone, followed by candles that resolve to target or stop
+    (≈`win_rate` winners, seeded). ILLUSTRATIVE ONLY — it exercises the trade
+    accounting and risk rules; it is **not** a performance prediction. Replace
+    with real OHLC (load_csv / F3_DATA_DIR) for genuine results.
+    """
+    rng = random.Random(seed)
+    # Start each day at 07:30 ET so the ~26-candle setup completes inside the
+    # New York AM killzone (08:30–11:00) where the timing agent allows entries.
+    today = datetime.now(ET).replace(hour=7, minute=30, second=0, microsecond=0)
+    out: list[Candle] = []
+    d = 0
+    built = 0
+    while built < days:
+        day_start = today - timedelta(days=(days * 2 - d))
+        d += 1
+        if day_start.weekday() >= 5:   # skip weekends
+            continue
+        built += 1
+        base = 20_000.0 + rng.uniform(-300, 300)
+        setup = _long_setup_candles(base)
+        win = rng.random() < win_rate
+        resolution = _resolution_candles(setup[-1].close, win=win)
+        day = setup + resolution
+        times = [day_start + timedelta(minutes=minutes * i) for i in range(len(day))]
+        out.extend(Candle(t, c.open, c.high, c.low, c.close, c.volume)
+                   for t, c in zip(times, day))
+    return out

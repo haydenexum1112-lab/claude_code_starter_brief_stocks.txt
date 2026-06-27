@@ -11,6 +11,11 @@ Usage:
   python run_f3.py night     Send the evening report now.
   python run_f3.py demo      Run the engine on a clean textbook setup and print
                              the full agent board + Claude's sign-off (no network).
+  python run_f3.py backtest [CSV] [MARKET]
+                             Backtest the strategy. With a CSV of historical OHLC
+                             it reports win rate, avg R, return and max drawdown.
+                             With no CSV it runs on a synthetic history (mechanics
+                             check only — not a performance prediction).
 """
 from __future__ import annotations
 
@@ -71,6 +76,21 @@ def main() -> None:
         candles = textbook_long_setup(end=end)
         decision = F3Engine(cfg).evaluate("NQ", candles, account_balance=50_000)
         _print_decision(decision)
+    elif cmd == "backtest":
+        from f3.backtest import F3Backtester
+        from f3.market_data import load_csv, synthetic_history
+        args = [a for a in sys.argv[2:]]
+        if args and args[0].lower().endswith(".csv"):
+            candles = load_csv(args[0])
+            market = args[1] if len(args) > 1 else "NQ"
+            print(f"Backtesting {market} on {args[0]} ({len(candles)} candles)\n")
+        else:
+            market = args[0] if args else "NQ"
+            candles = synthetic_history(days=12)
+            print("Backtesting on SYNTHETIC history — illustrative only, NOT a\n"
+                  "performance prediction. Pass a real CSV: run_f3.py backtest data.csv NQ\n")
+        result = F3Backtester(cfg).run(market, candles)
+        print(result.report())
     else:
         print(__doc__)
         sys.exit(1)

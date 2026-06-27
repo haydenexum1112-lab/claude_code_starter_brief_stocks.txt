@@ -103,6 +103,8 @@ in code, so Claude can never approve a setup an agent has failed.
 pip install -r requirements.txt
 
 python run_f3.py demo      # textbook setup → full agent board + Claude sign-off (offline)
+python run_f3.py backtest             # backtest on synthetic data (mechanics check)
+python run_f3.py backtest NQ.csv NQ   # backtest on YOUR real OHLC data
 python run_f3.py scan      # force a scan now (synthetic feed unless F3_DATA_DIR set)
 python run_f3.py morning   # send the morning report now
 python run_f3.py night     # send the evening report now
@@ -110,6 +112,27 @@ python run_f3.py tick      # one scheduled tick (what the cloud cron calls)
 
 python -m unittest f3.tests.test_f3 -v   # tests (offline)
 ```
+
+### Prove it first — the backtester
+
+Before risking a funded account, find out whether the strategy actually makes
+money. `run_f3.py backtest` runs the **exact same engine** over historical
+candles, simulates every trade to its stop or target, and reports:
+
+```
+Total return / Max drawdown / Trades / Win rate / Average R / Profit factor
+```
+
+With **no arguments it uses a synthetic history** — that only proves the
+*mechanics and accounting* work, it is **not** a performance prediction. For a
+real verdict, pass your own OHLC export:
+
+```bash
+python run_f3.py backtest NQ.csv NQ     # columns: time,open,high,low,close,volume
+```
+
+The recommended path to a funded account: **backtest on real data → paper trade
+live → only then run the evaluation.**
 
 ### Wiring a live data feed
 
