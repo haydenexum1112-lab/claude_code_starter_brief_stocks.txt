@@ -11,3 +11,4 @@ build/
 *.egg-info/
 .pytest_cache/
 .DS_Store
+f3_state.json

@@ -4,3 +4,7 @@ numpy>=1.26.0
 requests>=2.31.0
 apscheduler>=3.10.0,<4.0.0
 python-dotenv>=1.0.0
+
+# F3 Strategy (Claude Trader) — Claude is the CEO that signs off trades.
+# Optional: without it, the engine falls back to a deterministic consensus.
+anthropic>=0.40.0
