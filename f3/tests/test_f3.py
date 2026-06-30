@@ -115,10 +115,24 @@ class BacktestTests(unittest.TestCase):
 
 class IctPrimitiveTests(unittest.TestCase):
     def test_killzones(self) -> None:
+        # Sniper default: New York AM only.
         cfg = F3Config()
-        self.assertIsNotNone(cfg.killzone_for(time(9, 0)))    # NY AM
-        self.assertIsNotNone(cfg.killzone_for(time(3, 0)))    # London
+        self.assertIsNotNone(cfg.killzone_for(time(9, 0)))    # NY AM — traded
+        self.assertIsNone(cfg.killzone_for(time(3, 0)))       # London — skipped now
         self.assertIsNone(cfg.killzone_for(time(13, 0)))      # dead zone
+
+    def test_london_available_when_opted_in(self) -> None:
+        from f3.config import KILLZONES
+        cfg = F3Config(killzones=KILLZONES)
+        self.assertIsNotNone(cfg.killzone_for(time(3, 0)))    # London back on
+
+    def test_safety_rejects_tight_stops(self) -> None:
+        # No trade in the synthetic should lose more than ~1R (the safety fix).
+        from f3.backtest import F3Backtester
+        from f3.market_data import synthetic_history
+        r = F3Backtester(slippage_points=0.5).run("NQ", synthetic_history(days=12))
+        for t in r.trades:
+            self.assertGreaterEqual(t.r_multiple, -1.6, f"loss too big: {t}")
 
     def test_bias_detected(self) -> None:
         candles = textbook_long_setup(end=_ny_am_end())

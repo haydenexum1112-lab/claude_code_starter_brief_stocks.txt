@@ -51,6 +51,11 @@ def _build_trade(market: str, a: ict.F3Analysis, cfg: F3Config) -> ProposedTrade
             return None
         target = entry - min_rr * risk
 
+    # Safety: refuse a stop tighter than the minimum — a near-zero risk would
+    # blow position size up and let a tiny move become a huge loss.
+    if risk < cfg.min_risk_frac * entry:
+        return None
+
     return ProposedTrade(
         market=market,
         direction=a.bias,
@@ -109,6 +114,9 @@ class F3Engine:
             htf_width=cfg.htf_swing_width,
             ltf_width=cfg.ltf_swing_width,
             lookback=cfg.lookback,
+            min_zone_frac=cfg.min_zone_frac,
+            require_extreme_sweep=cfg.require_extreme_sweep,
+            extreme_tol_frac=cfg.extreme_tol_frac,
         )
         trade = _build_trade(market, a, cfg)
 

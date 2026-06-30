@@ -56,18 +56,23 @@ class RiskRules:
     min_reward_risk: float = 2.0
     # Hit the daily loss cap → done for the day, no exceptions (% of account).
     daily_loss_cap_pct: float = 2.0
-    # Capped — no over-trading, no revenge.
-    max_trades_per_day: int = 3
+    # Capped — no over-trading, no revenge. Sniper mode: one A+ setup a day.
+    max_trades_per_day: int = 1
     # Never move a stop against the trade. Ever.
     allow_moving_stop_against_trade: bool = False
 
 
+# Sniper default: trade only the New York AM killzone (the sweet spot). London is
+# still available — pass killzones=KILLZONES to F3Config to trade both.
+NEW_YORK_AM_ONLY: tuple[Killzone, ...] = (KILLZONES[1],)
+
+
 @dataclass(frozen=True)
 class F3Config:
-    """Top-level knobs for the engine. Sensible ICT defaults out of the box."""
+    """Top-level knobs for the engine. Sniper ICT defaults out of the box."""
 
     markets: tuple[str, ...] = MARKETS
-    killzones: tuple[Killzone, ...] = KILLZONES
+    killzones: tuple[Killzone, ...] = NEW_YORK_AM_ONLY
     risk: RiskRules = field(default_factory=RiskRules)
 
     # Fractal width for higher-timeframe swing points (FRAME / structure).
@@ -79,6 +84,17 @@ class F3Config:
     # A swept level must be retaken by the close — small buffer past the wick for
     # the protective stop, expressed as a fraction of the swept-leg range.
     stop_buffer_frac: float = 0.10
+
+    # --- Selectivity / safety (the "sniper" filters) ---------------------------
+    # Reject setups whose natural stop is tighter than this fraction of price —
+    # prevents a near-zero-risk stop from blowing position size up (the safety fix).
+    min_risk_frac: float = 0.0008
+    # The entry FVG/OB zone must be at least this fraction of price wide (no noise).
+    min_zone_frac: float = 0.0004
+    # The swept level must sit near the recent range extreme (real liquidity),
+    # within this fraction of the prior swing range.
+    require_extreme_sweep: bool = True
+    extreme_tol_frac: float = 0.25
 
     # Claude (the CEO) model id. Adaptive thinking is used automatically.
     ceo_model: str = "claude-opus-4-8"

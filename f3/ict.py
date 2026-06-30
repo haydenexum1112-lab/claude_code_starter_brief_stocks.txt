@@ -143,17 +143,37 @@ class LiquiditySweep:
 
 
 def find_sweep(candles: list[Candle], width: int, lookback: int,
-               bias: Direction) -> LiquiditySweep | None:
+               bias: Direction, require_extreme: bool = False,
+               extreme_tol_frac: float = 0.25) -> LiquiditySweep | None:
     """
     Look for the most recent run on an obvious high/low (where stops sit) that
     was rejected — price wicks beyond a prior swing then closes back inside.
 
     For a LONG bias we want sell-side liquidity below taken (a swing low swept
     then reclaimed); for a SHORT bias, buy-side liquidity above.
+
+    With `require_extreme`, only count it as a real liquidity raid if the swept
+    level sits near the bottom (longs) / top (shorts) of the recent swing range —
+    i.e. an *obvious* level where stops actually pile up, not a tiny interior wiggle.
     """
     swings = swing_points(candles, width)
     n = len(candles)
     start = max(width, n - lookback)
+
+    def near_extreme(level: float, prior: list[Swing], low_side: bool) -> bool:
+        if not require_extreme:
+            return True
+        lows = [s.price for s in prior if not s.is_high]
+        highs = [s.price for s in prior if s.is_high]
+        if not lows or not highs:
+            return True
+        rng = max(highs) - min(lows)
+        if rng <= 0:
+            return True
+        band = extreme_tol_frac * rng
+        if low_side:
+            return level <= min(lows) + band
+        return level >= max(highs) - band
 
     best: LiquiditySweep | None = None
     for i in range(start, n):
@@ -161,12 +181,13 @@ def find_sweep(candles: list[Candle], width: int, lookback: int,
         prior = [s for s in swings if s.index < i]
         if bias in (Direction.LONG, Direction.NEUTRAL):
             for s in prior:
-                if not s.is_high and c.low < s.price <= c.close:
-                    # dipped below the swing low but closed back above it
+                if not s.is_high and c.low < s.price <= c.close \
+                        and near_extreme(s.price, prior, low_side=True):
                     best = LiquiditySweep(i, s.price, c.low, Direction.LONG)
         if bias in (Direction.SHORT, Direction.NEUTRAL):
             for s in prior:
-                if s.is_high and c.high > s.price >= c.close:
+                if s.is_high and c.high > s.price >= c.close \
+                        and near_extreme(s.price, prior, low_side=False):
                     best = LiquiditySweep(i, s.price, c.high, Direction.SHORT)
     return best
 
@@ -223,16 +244,21 @@ def order_blocks(candles: list[Candle], lookback: int) -> list[Zone]:
 
 
 def entry_zone(candles: list[Candle], lookback: int, bias: Direction,
-               dr: DealingRange | None) -> Zone | None:
+               dr: DealingRange | None, min_zone_frac: float = 0.0) -> Zone | None:
     """
     The setup zone: the most recent FVG/OB aligned with bias that sits in the
-    discount (for longs) or premium (for shorts) half of the dealing range.
+    discount (for longs) or premium (for shorts) half of the dealing range, and
+    is at least `min_zone_frac` of price wide (filters out noise-sized gaps).
     """
     if bias is Direction.NEUTRAL:
         return None
     candidates = [z for z in (fair_value_gaps(candles, lookback)
                               + order_blocks(candles, lookback))
                   if z.direction is bias]
+    if min_zone_frac > 0 and candles:
+        price = candles[-1].close
+        candidates = [z for z in candidates
+                      if (z.high - z.low) >= min_zone_frac * price]
     if dr is not None:
         if bias is Direction.LONG:
             candidates = [z for z in candidates if dr.is_discount(z.mid)]
@@ -283,12 +309,16 @@ class F3Analysis:
 
 
 def analyze(market: str, candles: list[Candle], *, htf_width: int,
-            ltf_width: int, lookback: int) -> F3Analysis:
+            ltf_width: int, lookback: int, min_zone_frac: float = 0.0,
+            require_extreme_sweep: bool = False,
+            extreme_tol_frac: float = 0.25) -> F3Analysis:
     """Run the full FRAME→FIND chain and return everything the agents grade."""
     bias, last_break = htf_bias(candles, htf_width)
     dr = dealing_range(candles, htf_width)
-    sweep = find_sweep(candles, htf_width, lookback, bias)
-    zone = entry_zone(candles, lookback, bias, dr)
+    sweep = find_sweep(candles, htf_width, lookback, bias,
+                       require_extreme=require_extreme_sweep,
+                       extreme_tol_frac=extreme_tol_frac)
+    zone = entry_zone(candles, lookback, bias, dr, min_zone_frac=min_zone_frac)
 
     ltf_confirmed = False
     if sweep is not None:
