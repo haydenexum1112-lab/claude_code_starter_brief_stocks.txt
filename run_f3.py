@@ -9,23 +9,22 @@ Usage:
   python run_f3.py scan      Force a market scan right now (ignores the clock).
   python run_f3.py morning   Send the morning report now.
   python run_f3.py night     Send the evening report now.
-  python run_f3.py demo      Run the engine on a clean textbook setup and print
-                             the full agent board + Claude's sign-off (no network).
-  python run_f3.py backtest [CSV] [MARKET]
-                             Backtest the strategy. With a CSV of historical OHLC
-                             it reports win rate, avg R, return and max drawdown.
-                             With no CSV it runs on a synthetic history (mechanics
-                             check only — not a performance prediction).
+  python run_f3.py demo [CSV] [MARKET]
+                             Show the most recent REAL setup the engine would have
+                             fired on your downloaded data (default NQ.csv).
+  python run_f3.py backtest CSV [MARKET]
+                             Backtest on REAL historical OHLC — reports win rate,
+                             avg R, return and max drawdown. Real data required.
+
+  Get real data first:  pip install yfinance && python fetch_data.py
 """
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime
 
-from f3.config import ET, F3Config
+from f3.config import F3Config
 from f3.engine import F3Engine
-from f3.market_data import textbook_long_setup
 from f3.runner import run_tick, scan_markets
 from f3 import alerts
 from f3.state import DailyState
@@ -72,24 +71,52 @@ def main() -> None:
     elif cmd == "night":
         alerts.send_evening_report(cfg, DailyState.load())
     elif cmd == "demo":
-        end = datetime.now(ET).replace(hour=9, minute=45, second=0, microsecond=0)
-        candles = textbook_long_setup(end=end)
-        decision = F3Engine(cfg).evaluate("NQ", candles, account_balance=50_000)
-        _print_decision(decision)
-    elif cmd == "backtest":
-        from f3.backtest import F3Backtester
-        from f3.market_data import load_csv, synthetic_history
-        args = [a for a in sys.argv[2:]]
-        if args and args[0].lower().endswith(".csv"):
-            candles = load_csv(args[0])
-            market = args[1] if len(args) > 1 else "NQ"
-            print(f"Backtesting {market} on {args[0]} ({len(candles)} candles)\n")
+        # Honest demo: show the most recent REAL setup the engine would have fired
+        # on your downloaded data. No made-up examples.
+        import os
+        from f3.market_data import load_csv
+        from f3.backtest import _group_by_day
+        args = sys.argv[2:]
+        path = next((a for a in args if a.lower().endswith(".csv")), "NQ.csv")
+        market = next((a for a in args if not a.lower().endswith(".csv")), "NQ")
+        if not os.path.exists(path):
+            print(f"No real data found at {path!r}.\n"
+                  "Download it first:  pip install yfinance && python fetch_data.py\n"
+                  "Then:  python run_f3.py demo NQ.csv NQ")
+            sys.exit(1)
+        candles = load_csv(path)
+        engine = F3Engine(cfg)
+        last_fire = None
+        for day in list(_group_by_day(candles).values())[-10:]:  # last ~10 sessions
+            for i in range(cfg.htf_swing_width * 2 + 5, len(day)):
+                try:
+                    d = engine.evaluate(market, day[: i + 1], account_balance=50_000)
+                except ValueError:
+                    continue
+                if d.fire:
+                    last_fire = (d, day[i].time)
+        if last_fire is None:
+            print(f"No FIRE in the last sessions of real {market} data — the system "
+                  "is being patient (that's the point). Try the backtest for the full picture.")
         else:
-            market = args[0] if args else "NQ"
-            candles = synthetic_history(days=12)
-            print("Backtesting on SYNTHETIC history — illustrative only, NOT a\n"
-                  "performance prediction. Pass a real CSV: run_f3.py backtest data.csv NQ\n")
-        # Realistic costs per market: slippage (price points against you) + commission.
+            d, when = last_fire
+            print(f"Most recent REAL setup it would have fired — {market} at "
+                  f"{when:%Y-%m-%d %H:%M ET}:")
+            _print_decision(d)
+    elif cmd == "backtest":
+        import os
+        from f3.backtest import F3Backtester
+        from f3.market_data import load_csv
+        args = sys.argv[2:]
+        path = next((a for a in args if a.lower().endswith(".csv")), None)
+        market = next((a for a in args if not a.lower().endswith(".csv")), "NQ")
+        if path is None or not os.path.exists(path):
+            print("Honest backtest needs REAL data — no synthetic results.\n"
+                  "Download it:  pip install yfinance && python fetch_data.py\n"
+                  "Then run:     python run_f3.py backtest NQ.csv NQ")
+            sys.exit(1)
+        candles = load_csv(path)
+        print(f"Backtesting {market} on {path} ({len(candles)} real candles)\n")
         slip = {"NQ": 0.5, "GC": 0.2}.get(market.upper(), 0.5)
         bt = F3Backtester(cfg, slippage_points=slip, commission=4.0)
         result = bt.run(market, candles)
