@@ -89,7 +89,10 @@ def main() -> None:
             candles = synthetic_history(days=12)
             print("Backtesting on SYNTHETIC history — illustrative only, NOT a\n"
                   "performance prediction. Pass a real CSV: run_f3.py backtest data.csv NQ\n")
-        result = F3Backtester(cfg).run(market, candles)
+        # Realistic costs per market: slippage (price points against you) + commission.
+        slip = {"NQ": 0.5, "GC": 0.2}.get(market.upper(), 0.5)
+        bt = F3Backtester(cfg, slippage_points=slip, commission=4.0)
+        result = bt.run(market, candles)
         print(result.report())
     else:
         print(__doc__)

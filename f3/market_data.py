@@ -143,15 +143,28 @@ def _long_setup_candles(base: float = 20_000.0) -> list[Candle]:
     return candles
 
 
-def _resolution_candles(o: float, *, win: bool, risk: float = 110.0,
-                        count: int = 8) -> list[Candle]:
-    """Candles after the signal that walk price to the target (win) or stop (loss)."""
-    # entry ≈ o (last close), target ≈ entry + 2*risk, stop ≈ entry - risk
-    dest = o + 2.4 * risk if win else o - 1.4 * risk
+def _resolution_candles(base: float, *, win: bool) -> list[Candle]:
+    """
+    Candles after the signal that FIRST pull back into the entry zone (so a
+    realistic limit order fills), then run to the target (win) or the stop (loss).
+    Mirrors the geometry the engine produces for a base-priced long setup:
+    entry ≈ base+36, stop ≈ base-75, target = entry + 2*(entry-stop).
+    """
+    start = base + 75          # last setup close (price has shifted up)
+    entry = base + 36
+    stop = base - 75
+    target = entry + 2 * (entry - stop)
+    dest = target if win else stop
+
+    closes: list[float] = []
+    for k in range(1, 5):      # leg 1: pull back down into the entry zone (fill)
+        closes.append(start + (entry - start) * k / 4)
+    for k in range(1, 7):      # leg 2: run to target (win) or stop (loss)
+        closes.append(entry + (dest - entry) * k / 6)
+
     out: list[Candle] = []
-    prev = o
-    for k in range(1, count + 1):
-        c = o + (dest - o) * k / count
+    prev = start
+    for c in closes:
         pad = abs(c - prev) * 0.2 + 2
         out.append(_candle(datetime.now(ET), prev, c, pad, pad))
         prev = c
@@ -183,7 +196,7 @@ def synthetic_history(days: int = 12, *, minutes: int = 5, seed: int = 11,
         base = 20_000.0 + rng.uniform(-300, 300)
         setup = _long_setup_candles(base)
         win = rng.random() < win_rate
-        resolution = _resolution_candles(setup[-1].close, win=win)
+        resolution = _resolution_candles(base, win=win)
         day = setup + resolution
         times = [day_start + timedelta(minutes=minutes * i) for i in range(len(day))]
         out.extend(Candle(t, c.open, c.high, c.low, c.close, c.volume)

@@ -48,6 +48,9 @@ class BacktestResult:
     end_balance: float
     trades: list[Trade] = field(default_factory=list)
     equity_curve: list[float] = field(default_factory=list)
+    slippage_points: float = 0.0
+    commission: float = 0.0
+    no_fill: int = 0          # setups that fired but the limit never filled
 
     # -- summary stats ------------------------------------------------------- #
     @property
@@ -104,6 +107,11 @@ class BacktestResult:
             f"({len(self.wins)}W / {len(self.losses)}L)",
             f"Average R:       {self.avg_r:+.2f}R per trade",
             f"Profit factor:   {self.profit_factor:.2f}",
+            "-" * 56,
+            f"Signals that never filled: {self.no_fill}  "
+            f"(limit entry — price never returned to the zone)",
+            f"Assumptions:     {self.slippage_points} pt slippage, "
+            f"${self.commission:.0f} commission/trade",
             "=" * 56,
         ]
         if self.trades:
@@ -129,15 +137,24 @@ def _group_by_day(candles: list[Candle]) -> dict[date, list[Candle]]:
 
 class F3Backtester:
     def __init__(self, config: F3Config | None = None,
-                 start_balance: float = 50_000.0) -> None:
+                 start_balance: float = 50_000.0,
+                 slippage_points: float = 0.0,
+                 commission: float = 0.0) -> None:
         self.config = config or F3Config()
         self.start_balance = start_balance
+        # Realism knobs: slippage (price points against you on entry & stop) and
+        # a per-trade commission in dollars. Defaults are 0 (idealised); the CLI
+        # passes realistic per-market values.
+        self.slippage_points = slippage_points
+        self.commission = commission
         self.engine = F3Engine(self.config)
 
     def run(self, market: str, candles: list[Candle]) -> BacktestResult:
         cfg = self.config
         balance = self.start_balance
-        result = BacktestResult(self.start_balance, balance)
+        result = BacktestResult(self.start_balance, balance,
+                                slippage_points=self.slippage_points,
+                                commission=self.commission)
         result.equity_curve.append(balance)
         min_bars = cfg.htf_swing_width * 2 + 5
 
@@ -175,7 +192,8 @@ class F3Backtester:
                 seen_entries.append(entry)
 
                 trade, exit_i = self._simulate(decision, day, i, balance)
-                if trade is None:           # never filled within the session
+                if trade is None:           # limit never filled — no trade
+                    result.no_fill += 1
                     i += 1
                     continue
 
@@ -192,35 +210,58 @@ class F3Backtester:
 
     def _simulate(self, decision, day: list[Candle], signal_i: int,
                   balance: float):
-        """Walk forward from the signal bar to the stop or target."""
+        """
+        Realistic fill: the entry is a limit order in the zone. We only take the
+        trade if price actually trades back to it (no free perfect entries). Then
+        we race stop vs target, applying slippage on entry & stop and a per-trade
+        commission. Returns (None, signal_i) if the limit never fills.
+        """
         t = decision.trade
         risk_dollars = balance * self.config.risk.risk_per_trade_pct / 100.0
         long = t.direction is Direction.LONG
-        entry = t.entry
-        entry_time = day[signal_i].time.strftime("%Y-%m-%d %H:%M ET")
+        planned_risk = t.risk_per_unit
+        if planned_risk <= 0:
+            return None, signal_i
+        slip = self.slippage_points
 
+        # 1) Wait for the limit at t.entry to fill (price must return to the zone).
+        fill_j = None
         for j in range(signal_i + 1, len(day)):
+            c = day[j]
+            if (long and c.low <= t.entry) or (not long and c.high >= t.entry):
+                fill_j = j
+                break
+        if fill_j is None:
+            return None, signal_i          # never filled — no trade
+
+        entry_time = day[fill_j].time.strftime("%Y-%m-%d %H:%M ET")
+        fill = t.entry + slip if long else t.entry - slip   # slippage against you
+
+        # 2) Race stop vs target from the fill bar onward (stop-first on a tie).
+        for j in range(fill_j, len(day)):
             c = day[j]
             hit_stop = c.low <= t.stop if long else c.high >= t.stop
             hit_target = c.high >= t.target if long else c.low <= t.target
-            if hit_stop:                    # conservative: stop before target
-                return self._close(t, entry_time, entry, t.stop, -1.0,
+            if hit_stop:
+                exit_p = (t.stop - slip) if long else (t.stop + slip)
+                r = ((exit_p - fill) if long else (fill - exit_p)) / planned_risk
+                return self._close(t, entry_time, fill, exit_p, r,
                                    risk_dollars, balance, "loss"), j
             if hit_target:
-                r = t.reward_risk
-                return self._close(t, entry_time, entry, t.target, r,
+                exit_p = t.target          # limit exit — no slippage in our favour
+                r = ((exit_p - fill) if long else (fill - exit_p)) / planned_risk
+                return self._close(t, entry_time, fill, exit_p, r,
                                    risk_dollars, balance, "win"), j
 
         # End of session — flat by the close (no overnight risk).
         last = day[-1].close
-        per_unit = t.risk_per_unit
-        r = ((last - entry) if long else (entry - last)) / per_unit if per_unit else 0.0
-        return self._close(t, entry_time, entry, last, r, risk_dollars,
+        r = ((last - fill) if long else (fill - last)) / planned_risk
+        return self._close(t, entry_time, fill, last, r, risk_dollars,
                            balance, "eod"), len(day) - 1
 
     def _close(self, t, entry_time, entry, exit_price, r, risk_dollars,
                balance, outcome):
-        pnl = risk_dollars * r
+        pnl = risk_dollars * r - self.commission
         return Trade(
             market=t.market,
             entry_time=entry_time,
