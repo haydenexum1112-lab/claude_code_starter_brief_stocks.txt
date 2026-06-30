@@ -1,0 +1,66 @@
+name: F3 Strategy (Claude Trader)
+
+# Runs the stateless F3 single-tick runner (run_f3.py tick) in the cloud, so it
+# keeps trading with your computer off. The runner re-checks the real ET time and
+# does exactly one of: morning email / scan & auto-fire / evening email / nothing.
+#
+# GitHub cron is UTC with no DST. We cover:
+#   London KZ  02:00–05:00 ET  = 06:00–10:00 UTC (EST) / 07:00–09:00 (EDT)
+#   NY AM KZ   08:30–11:00 ET  = 13:30–16:00 UTC (EST) / 12:30–15:00 (EDT)
+#   Morning email ~07:30 ET, Evening email ~16:30 ET
+# => run every 15 min across 06:00–22:00 UTC on weekdays. Off-window ticks no-op.
+#
+# NOTE: scheduled workflows only run from the repository's DEFAULT branch.
+on:
+  schedule:
+    - cron: "*/15 6-21 * * 1-5"
+  workflow_dispatch: {}   # run manually from the Actions tab to test
+
+concurrency:
+  group: f3-trader
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Carry the day's trade count / loss across the 15-min ticks so the risk
+      # rules (max trades/day, daily loss cap) and the evening report survive the
+      # stateless runner. Keyed by date so it resets each morning.
+      - name: Restore daily state
+        uses: actions/cache@v4
+        with:
+          path: f3_state.json
+          key: f3-state-${{ github.run_id }}
+          restore-keys: |
+            f3-state-
+
+      - name: Run one F3 tick
+        env:
+          # Execution: leave F3_EXECUTE unset (or 0) for dry-run/log-only while you
+          # validate. Set F3_EXECUTE=1 and F3_WEBHOOK_URL to place real orders.
+          F3_EXECUTE: ${{ vars.F3_EXECUTE }}
+          F3_WEBHOOK_URL: ${{ secrets.F3_WEBHOOK_URL }}
+          F3_ACCOUNT_BALANCE: ${{ vars.F3_ACCOUNT_BALANCE }}
+          F3_NEWS_TODAY: ${{ vars.F3_NEWS_TODAY }}
+          F3_DATA_DIR: ${{ vars.F3_DATA_DIR }}
+          # Claude (the CEO) — optional. Without it, the deterministic consensus signs off.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Morning & night emails (Gmail App Password).
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MY_EMAIL: ${{ secrets.MY_EMAIL }}
+        run: python run_f3.py tick
